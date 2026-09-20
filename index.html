@@ -1050,8 +1050,9 @@ document.getElementById('chat-form').addEventListener('submit', async e => {
     thinking.textContent = reply;
     history.push({ role: 'assistant', content: reply });
   } catch (err) {
+    console.error('[nexie]', err);        // open devtools to see the real cause
     thinking.remove();
-    addMsg("Couldn't reach Nexie just now.", 'sys');
+    addMsg("Couldn't reach Nexie just now. (" + err.message + ")", 'sys');
   } finally {
     sendEl.disabled = false;
     inputEl.focus();
