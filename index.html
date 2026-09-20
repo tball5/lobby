@@ -9,6 +9,12 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
   canvas { display: block; touch-action: none; cursor: grab; }
   canvas:active { cursor: grabbing; }
+  #stats {
+    position: fixed; left: 12px; top: 12px; z-index: 45; pointer-events: none;
+    background: rgba(10,10,14,.8); color: #cfe3ff; border: 1px solid #23232b; border-radius: 8px;
+    padding: 6px 9px; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; white-space: pre;
+  }
+  #stats[hidden] { display: none; }
   #fade {
     position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none;
     transition: opacity .5s ease; z-index: 50;
@@ -49,6 +55,7 @@
 <body>
 <div id="hint"></div>
 <div id="fade"></div>
+<div id="stats" hidden></div>
 <div id="chat" hidden>
   <div id="chat-bar"><span id="chat-name">Nexie</span><button id="chat-close" aria-label="Close">×</button></div>
   <div id="chat-log"></div>
@@ -82,7 +89,7 @@ setTimeout(() => hint.style.opacity = 0, 6000);
 
 // ================= RENDERER / SCENE =================
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(isTouch ? 1 : Math.min(devicePixelRatio, 1.25));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -697,8 +704,8 @@ for (let z = -60; z >= -330; z -= 18) {
 }
 
 // plaza at the foot of the entrance stair
-box(120, 0.02, 70, flat(0x6a6672), 0, -0.03, 46);
-box(10, 0.02, 60, flat(0x8e8a80), 0, -0.01, 60);
+box(120, 0.02, 70, flat(0x3a3a41), 0, -0.03, 46);
+box(10, 0.02, 60, flat(0x55555c), 0, -0.01, 60);
 
 // a few blocks behind the building so that side isn't empty
 for (let i = 0; i < 12; i++) {
@@ -1052,6 +1059,13 @@ el.addEventListener('pointermove', e => {
   el.style.cursor = pickAt(e.clientX, e.clientY) ? 'pointer' : 'grab';
 });
 
+// press P for a frame counter and draw-call readout
+const statsEl = document.getElementById('stats');
+let statsOn = false, frames = 0, statsT = 0, fps = 0;
+addEventListener('keydown', e => {
+  if (e.code === 'KeyP' && !uiOpen) { statsOn = !statsOn; statsEl.hidden = !statsOn; }
+});
+
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -1076,6 +1090,14 @@ renderer.setAnimationLoop(() => {
   nexie.rotation.y = Math.atan2(camera.position.x - nexie.position.x, camera.position.z - nexie.position.z);
 
   renderer.render(scene, camera);
+
+  if (statsOn) {
+    frames++; statsT += dt;
+    if (statsT >= 0.5) { fps = Math.round(frames / statsT); frames = 0; statsT = 0; }
+    const r = renderer.info.render;
+    statsEl.textContent =
+      `${fps} fps\ncalls  ${r.calls}\ntris   ${(r.triangles / 1000).toFixed(0)}k\ndpr    ${renderer.getPixelRatio()}`;
+  }
 });
 </script>
 </body>
