@@ -9,6 +9,16 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
   canvas { display: block; touch-action: none; cursor: grab; }
   canvas:active { cursor: grabbing; }
+  #loading {
+    position: fixed; inset: 0; z-index: 60; background: #060608;
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity .6s ease;
+  }
+  #loading span {
+    color: #9a93ad; font: 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+    letter-spacing: .28em; text-transform: uppercase;
+  }
+  #loading.off { opacity: 0; pointer-events: none; }
   #stats {
     position: fixed; left: 12px; top: 12px; z-index: 45; pointer-events: none;
     background: rgba(10,10,14,.8); color: #cfe3ff; border: 1px solid #23232b; border-radius: 8px;
@@ -53,6 +63,7 @@
 </style>
 </head>
 <body>
+<div id="loading"><span>Entering the lobby…</span></div>
 <div id="hint"></div>
 <div id="fade"></div>
 <div id="stats" hidden></div>
@@ -259,6 +270,7 @@ const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), M.floor);
 floor.rotation.x = -Math.PI / 2;
 scene.add(floor);
 
+BATCH = true;    // static shell, glazing and strips merge into a few meshes
 box(W + 2 * T, T, D + 2 * T, M.ceiling, 0, H + T / 2, 0);            // ceiling
 box(T, H, D + 2 * T, M.wall, -hw - T / 2, H / 2, 0);                  // left wall
 box(T, H, D + 2 * T, M.wall,  hw + T / 2, H / 2, 0);                  // right wall
@@ -312,12 +324,16 @@ scene.add(glass);
 // ================= ENTRANCE STAIR (down to the plaza) =================
 {
   const STEPS = Math.round(FLOOR / 0.18), RISE = FLOOR / STEPS, TREAD = 0.34, SW = 14;
+  BATCH = true;
   box(SW, 0.3, 2.6, M.black, 0, -0.15, hd + 1.6);                       // landing outside the doors
   box(SW, 0.03, 0.03, M.led, 0, 0.02, hd + 2.85);
   for (let i = 1; i <= STEPS; i++) {
     box(SW, RISE, TREAD, M.black, 0, -RISE * (i - 0.5), hd + 2.9 + TREAD * (i - 0.5));
     if (i % 6 === 0) box(SW, 0.015, 0.015, M.led, 0, -RISE * (i - 1) - 0.01, hd + 2.9 + TREAD * (i - 1) + 0.01);
   }
+  BATCH = false;
+  flushBatch(scene);
+
   // sloped glass balustrades either side
   const run = STEPS * TREAD, ang = Math.atan2(FLOOR, run), len = Math.hypot(run, FLOOR);
   for (const side of [-1, 1]) {
@@ -327,18 +343,22 @@ scene.add(glass);
     }
   }
   // facade below the doors
+  BATCH = true;
   box(W + 2 * T, FLOOR, 0.4, M.black, 0, -FLOOR / 2, hd + 0.5);
 }
 
 // ================= LED LINES =================
-// ceiling strips, now with real light along each one
-for (let x = -6; x <= 6; x += 4) {
-  box(0.08, 0.02, 11, M.led, x, H - 0.01, 0);
-  for (const z of (isTouch ? [0] : [-4, 0, 4])) {
-    const p = new THREE.PointLight(0xeef2ff, 0.3, 16, 2);
-    p.position.set(x, H - 0.15, z);
-    scene.add(p);
-  }
+// ceiling strips
+for (let x = -6; x <= 6; x += 4) box(0.08, 0.02, 11, M.led, x, H - 0.01, 0);
+
+// real lights along them: 8 on desktop, 2 on phones
+const lampSpots = isTouch
+  ? [[-3, 0], [3, 0]]
+  : [[-6, -3], [-6, 3], [-2, -3], [-2, 3], [2, -3], [2, 3], [6, -3], [6, 3]];
+for (const [lx, lz] of lampSpots) {
+  const p = new THREE.PointLight(0xeef2ff, isTouch ? 0.75 : 0.34, isTouch ? 26 : 17, 2);
+  p.position.set(lx, H - 0.15, lz);
+  scene.add(p);
 }
 // ceiling perimeter
 box(0.03, 0.03, D - 0.2, M.led, -hw + 0.05, H - 0.25, 0);
@@ -347,7 +367,10 @@ box(0.03, 0.03, D - 0.2, M.led,  hw - 0.05, H - 0.25, 0);
 box(0.02, 0.02, D - 0.2, M.led, -hw + 0.03, 0.04, 0);
 box(0.02, 0.02, D - 0.2, M.led,  hw - 0.03, 0.04, 0);
 
-// Columns
+BATCH = false;
+flushBatch(scene);
+
+// Columns (kept separate: they act as obstacles)
 [[-7.6, -8.2], [7.6, -8.2], [-7.6, 7.6], [7.6, 7.6]].forEach(([x, z]) => {
   solid(cyl(0.4, 0.4, H, M.black, x, H / 2, z));
   cyl(0.405, 0.405, 0.03, M.led, x, 0.3, z);
@@ -458,6 +481,7 @@ artPlane.rotation.y = -Math.PI / 2;
 artPlane.position.set(hw - 0.012, ART.y, ART.z);
 scene.add(artPlane);
 
+BATCH = true;
 // spill lip at the top, tiny, and the catch basin lip at the bottom
 const LIP_W = ART.w + 0.22;
 box(0.5, 0.09, LIP_W, M.steel, hw - 0.27, ART.y + ART.h / 2 + 0.045, ART.z);          // spill lip
@@ -540,6 +564,9 @@ const glyphRain = (() => {
   }
   return { update };
 })();
+
+BATCH = false;
+flushBatch(scene);
 
 // drop a jpg/png on the page to put an image here instead of the rain
 function setArtwork(url) {
@@ -638,6 +665,7 @@ if (THREE.FontLoader && THREE.TextGeometry) {
 }
 
 // Elevators (left wall)
+BATCH = true;
 [-4.65, -0.75, 3.15].forEach(z => {
   box(0.12, 3.3, 2.3, M.frame, -hw + 0.06, 1.65, z);
   box(0.06, 3.0, 0.97, M.steel, -hw + 0.14, 1.5, z - 0.5);
@@ -647,6 +675,7 @@ if (THREE.FontLoader && THREE.TextGeometry) {
 });
 
 // ================= OUTSIDE: PARK + DISTANT CITY =================
+// (the facade pieces just below still merge with the interior batch)
 const flat = (c, extra = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 1, envMapIntensity: 0, ...extra });
 const greyBack = [0x3b3648, 0x443f52, 0x332f3f].map(c =>
   new THREE.MeshStandardMaterial({ color: c, roughness: 0.6, metalness: 0.2, envMapIntensity: 0 }));
@@ -655,6 +684,9 @@ const greyBack = [0x3b3648, 0x443f52, 0x332f3f].map(c =>
 box(W + 2 * T, FLOOR, 0.4, M.black, 0, -FLOOR / 2, -hd - 0.35);
 box(W + 2 * T, 0.03, 0.03, M.led, 0, -0.35, -hd - 0.56);
 box(W + 4, 0.35, 5, M.black, 0, -FLOOR + 3.8, -hd - 2.5);   // entrance canopy
+
+BATCH = false;
+flushBatch(scene);                      // elevators + facade merged
 
 const OUT = new THREE.Group();          // everything outside sits a storey lower
 OUT.position.y = -FLOOR;
@@ -839,7 +871,7 @@ const CFG = {
   name: 'Nexie',
   image: 'nexie.png',
   position: [1.2, 0, -7.6],       // behind the desk
-  height: 1.75,
+  height: 1.88,
   greeting: "Welcome to the Nexus District. First time here?",
   endpoint: '',                    // your Cloudflare Worker URL
   doorUrl: 'https://shaden.technology/nexus/'
@@ -1107,9 +1139,18 @@ document.addEventListener('visibilitychange', () => {
   renderer.setAnimationLoop(document.hidden ? null : frame);   // no work in a background tab
 });
 
+const bootAt = performance.now();
+let booted = false;
+
 const clock = new THREE.Clock();
 function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
+  if (!booted) {                                   // hold the title card for a beat
+    booted = true;
+    const el = document.getElementById('loading');
+    setTimeout(() => el.classList.add('off'), Math.max(0, 1000 - (performance.now() - bootAt)));
+    setTimeout(() => el.remove(), 1800);
+  }
   // rain.update(performance.now());   // uncomment to let the background rain flow again
   glyphRain.update(dt);
 
