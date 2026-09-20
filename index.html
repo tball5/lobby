@@ -68,6 +68,7 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/loaders/FontLoader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/geometries/TextGeometry.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/utils/BufferGeometryUtils.js"></script>
 <script>
 // ================= SETTINGS =================
 const LOOK_SPEED = 0.0035;
@@ -89,7 +90,7 @@ setTimeout(() => hint.style.opacity = 0, 6000);
 
 // ================= RENDERER / SCENE =================
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(isTouch ? 1 : Math.min(devicePixelRatio, 1.25));
+renderer.setPixelRatio(Math.min(devicePixelRatio, isTouch ? 1.75 : 1.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -180,17 +181,24 @@ function tileTexture() {
   return t;
 }
 
-const gloss = (color, extra = {}) => new THREE.MeshPhysicalMaterial({
-  color, roughness: 0.18, metalness: 0.1, clearcoat: 1, clearcoatRoughness: 0.04,
-  envMapIntensity: 1.4, ...extra
-});
+// phones skip the clearcoat layer: same look, far cheaper shader
+const gloss = (color, extra = {}) => {
+  const o = { color, roughness: 0.18, metalness: 0.1, clearcoat: 1, clearcoatRoughness: 0.04,
+              envMapIntensity: 1.4, ...extra };
+  if (isTouch) {
+    const { clearcoat, clearcoatRoughness, ...rest } = o;
+    return new THREE.MeshStandardMaterial({ ...rest, roughness: Math.max(0.2, o.roughness) });
+  }
+  return new THREE.MeshPhysicalMaterial(o);
+};
 
 const M = {
   floor:     gloss(0x0a0a0b, { map: tileTexture(), roughness: 0.34, clearcoatRoughness: 0.16, envMapIntensity: 0.55 }),
-  wall:      new THREE.MeshPhysicalMaterial({ color: 0x0c0c0d, roughness: 0.7, metalness: 0,
-               clearcoat: WALL_SHEEN, clearcoatRoughness: 0.38, envMapIntensity: 0 }),
-  ceiling:   new THREE.MeshPhysicalMaterial({ color: 0x0a0a0c, roughness: 0.85, metalness: 0,
-               clearcoat: WALL_SHEEN * 0.5, clearcoatRoughness: 0.5, envMapIntensity: 0 }),
+  wall:      isTouch
+               ? new THREE.MeshStandardMaterial({ color: 0x0c0c0d, roughness: 0.6, metalness: 0, envMapIntensity: 0 })
+               : new THREE.MeshPhysicalMaterial({ color: 0x0c0c0d, roughness: 0.7, metalness: 0,
+                   clearcoat: WALL_SHEEN, clearcoatRoughness: 0.38, envMapIntensity: 0 }),
+  ceiling:   new THREE.MeshStandardMaterial({ color: 0x0a0a0c, roughness: 0.9, metalness: 0, envMapIntensity: 0 }),
   black:     gloss(0x111113),
   charcoal:  new THREE.MeshStandardMaterial({ color: 0x2a2b2e, roughness: 0.5 }),
   grey:      new THREE.MeshStandardMaterial({ color: 0x6a6d72, roughness: 0.9 }),
@@ -208,14 +216,39 @@ const M = {
                transparent: true, opacity: 0.16, depthWrite: false, envMapIntensity: 0 }),
 };
 
+// while BATCH is on, shapes are collected per material and merged into single meshes
+let BATCH = false;
+const batch = new Map();
+function collect(geo, mat, x, y, z) {
+  geo.translate(x, y, z);
+  if (!batch.has(mat)) batch.set(mat, []);
+  batch.get(mat).push(geo);
+}
+function flushBatch(parent) {
+  const U = THREE.BufferGeometryUtils;
+  for (const [mat, list] of batch) {
+    if (U && list.length > 1) {
+      const merged = U.mergeBufferGeometries(list, false);
+      list.forEach(g => g.dispose());
+      parent.add(new THREE.Mesh(merged, mat));
+    } else {
+      list.forEach(g => parent.add(new THREE.Mesh(g, mat)));
+    }
+  }
+  batch.clear();
+}
 function box(w, h, d, mat, x, y, z, parent = PARENT) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  const geo = new THREE.BoxGeometry(w, h, d);
+  if (BATCH) { collect(geo, mat, x, y, z); return null; }
+  const m = new THREE.Mesh(geo, mat);
   m.position.set(x, y, z);
   parent.add(m);
   return m;
 }
 function cyl(rt, rb, h, mat, x, y, z, parent = PARENT, seg = 32) {
-  const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
+  const geo = new THREE.CylinderGeometry(rt, rb, h, seg);
+  if (BATCH) { collect(geo, mat, x, y, z); return null; }
+  const m = new THREE.Mesh(geo, mat);
   m.position.set(x, y, z);
   parent.add(m);
   return m;
@@ -301,7 +334,7 @@ scene.add(glass);
 // ceiling strips, now with real light along each one
 for (let x = -6; x <= 6; x += 4) {
   box(0.08, 0.02, 11, M.led, x, H - 0.01, 0);
-  for (const z of [-4, 0, 4]) {
+  for (const z of (isTouch ? [0] : [-4, 0, 4])) {
     const p = new THREE.PointLight(0xeef2ff, 0.3, 16, 2);
     p.position.set(x, H - 0.15, z);
     scene.add(p);
@@ -460,7 +493,7 @@ const glyphRain = (() => {
     new THREE.Plane(new THREE.Vector3(0, -1, 0), TOP),
     new THREE.Plane(new THREE.Vector3(0, 1, 0), -BOT)
   ];
-  const COLS = 24, TRAIL = 8, DY = 0.25;
+  const COLS = isTouch ? 13 : 24, TRAIL = isTouch ? 6 : 8, DY = 0.25;
   const streams = [];
   for (let i = 0; i < COLS; i++) {
     const z = ART.z - ART.w / 2 + 0.25 + i * ((ART.w - 0.5) / (COLS - 1));
@@ -627,6 +660,7 @@ const OUT = new THREE.Group();          // everything outside sits a storey lowe
 OUT.position.y = -FLOOR;
 scene.add(OUT);
 PARENT = OUT;
+BATCH = true;            // everything outside gets merged
 
 // base ground
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), flat(0x5a5666));
@@ -787,6 +821,8 @@ for (const side of [-1, 1]) {
 
 
 
+BATCH = false;
+flushBatch(OUT);         // city collapses into a few draw calls
 PARENT = scene;
 
 // ================= LIGHTS (no shadows) =================
@@ -995,6 +1031,7 @@ el.addEventListener('pointerdown', e => {
   el.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, button: e.button, type: e.pointerType });
   if (pointers.size === 2) ({ dist: pinchDist, mx: midX, my: midY } = twoFingerState());
+  if (pointers.size === 3) toggleStats();                       // three-finger tap on mobile
 });
 
 let tap = null;
@@ -1062,12 +1099,16 @@ el.addEventListener('pointermove', e => {
 // press P for a frame counter and draw-call readout
 const statsEl = document.getElementById('stats');
 let statsOn = false, frames = 0, statsT = 0, fps = 0;
-addEventListener('keydown', e => {
-  if (e.code === 'KeyP' && !uiOpen) { statsOn = !statsOn; statsEl.hidden = !statsOn; }
+function toggleStats() { statsOn = !statsOn; statsEl.hidden = !statsOn; }
+addEventListener('keydown', e => { if (e.code === 'KeyP' && !uiOpen) toggleStats(); });
+if (location.search.includes('stats')) toggleStats();          // ?stats=1 on any device
+
+document.addEventListener('visibilitychange', () => {
+  renderer.setAnimationLoop(document.hidden ? null : frame);   // no work in a background tab
 });
 
 const clock = new THREE.Clock();
-renderer.setAnimationLoop(() => {
+function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
   // rain.update(performance.now());   // uncomment to let the background rain flow again
   glyphRain.update(dt);
@@ -1096,9 +1137,10 @@ renderer.setAnimationLoop(() => {
     if (statsT >= 0.5) { fps = Math.round(frames / statsT); frames = 0; statsT = 0; }
     const r = renderer.info.render;
     statsEl.textContent =
-      `${fps} fps\ncalls  ${r.calls}\ntris   ${(r.triangles / 1000).toFixed(0)}k\ndpr    ${renderer.getPixelRatio()}`;
+      `${fps} fps\ncalls  ${r.calls}\ntris   ${(r.triangles / 1000).toFixed(0)}k\ndpr    ${renderer.getPixelRatio().toFixed(2)}`;
   }
-});
+}
+renderer.setAnimationLoop(frame);
 </script>
 </body>
 </html>
