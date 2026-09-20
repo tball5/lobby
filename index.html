@@ -30,6 +30,24 @@
     transition: opacity .5s ease; z-index: 50;
   }
   #fade.on { opacity: 1; }
+  #door {
+    position: fixed; inset: 0; z-index: 42; display: flex; align-items: center; justify-content: center;
+    background: rgba(4,4,7,.55);
+  }
+  #door[hidden] { display: none; }
+  #door-card {
+    background: rgba(12,12,16,.96); border: 1px solid #2a2a33; border-radius: 12px;
+    padding: 22px 24px; text-align: center; min-width: 260px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.6);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: #e6e8ec;
+  }
+  #door-title { margin: 0 0 16px; letter-spacing: .16em; text-transform: uppercase; font-size: 13px; color: #cdbdf5; }
+  #door-actions { display: flex; gap: 10px; justify-content: center; }
+  #door-actions button {
+    border: 1px solid #2f2f3a; background: #16161d; color: #d8dbe2;
+    padding: 9px 18px; border-radius: 8px; font: inherit; cursor: pointer;
+  }
+  #door-exit { background: #4a3d6b; border-color: #5a4b80; color: #fff; }
   #chat {
     position: fixed; right: 16px; bottom: 16px; width: min(380px, calc(100% - 32px));
     max-height: min(60vh, 520px); display: flex; flex-direction: column; z-index: 40;
@@ -38,6 +56,12 @@
     box-shadow: 0 18px 50px rgba(0,0,0,.6);
   }
   #chat[hidden] { display: none; }
+  @media (max-width: 680px) {
+    #chat {
+      top: calc(8px + env(safe-area-inset-top, 0px)); bottom: auto;
+      left: 8px; right: 8px; width: auto; max-height: 42vh;
+    }
+  }
   #chat-bar { display: flex; align-items: center; justify-content: space-between;
     padding: 10px 12px; border-bottom: 1px solid #23232b; }
   #chat-name { letter-spacing: .14em; font-size: 12px; color: #b79cf2; text-transform: uppercase; }
@@ -67,6 +91,15 @@
 <div id="hint"></div>
 <div id="fade"></div>
 <div id="stats" hidden></div>
+<div id="door" hidden>
+  <div id="door-card">
+    <p id="door-title">Explore the District</p>
+    <div id="door-actions">
+      <button id="door-stay" type="button">Stay</button>
+      <button id="door-exit" type="button">Exit</button>
+    </div>
+  </div>
+</div>
 <div id="chat" hidden>
   <div id="chat-bar"><span id="chat-name">Nexie</span><button id="chat-close" aria-label="Close">×</button></div>
   <div id="chat-log"></div>
@@ -866,6 +899,7 @@ sun.position.set(-10, 20, -30);
 scene.add(sun);
 
 
+
 // ================= NEXIE + CLICKABLE DOORS =================
 const CFG = {
   name: 'Nexie',
@@ -876,7 +910,8 @@ const CFG = {
   endpoint: '',                    // your Cloudflare Worker URL
   doorUrl: 'https://shaden.technology/nexus/'
 };
-let uiOpen = false;
+let modalOpen = false;     // the door card blocks input; the chat does not
+const typing = () => document.activeElement === document.getElementById('chat-input');
 
 // placeholder silhouette until nexie.png is in place
 function placeholderTexture() {
@@ -955,10 +990,14 @@ function pickAt(cx, cy) {
   const hit = raycaster.intersectObjects([nexie, doorHit], false)[0];
   return hit ? hit.object : null;
 }
-function leaveBuilding() {
+const doorEl = document.getElementById('door');
+function askToLeave() { modalOpen = true; doorEl.hidden = false; }
+function closeDoor() { modalOpen = false; doorEl.hidden = true; }
+document.getElementById('door-stay').addEventListener('click', closeDoor);
+document.getElementById('door-exit').addEventListener('click', () => {
   document.getElementById('fade').classList.add('on');
   setTimeout(() => { location.href = CFG.doorUrl; }, 520);
-}
+});
 
 // ---- chat overlay (history lives in memory only) ----
 const chatEl = document.getElementById('chat');
@@ -975,7 +1014,6 @@ function addMsg(text, cls) {
   return d;
 }
 function openChat() {
-  uiOpen = true;
   chatEl.hidden = false;
   if (!history.length) {
     addMsg(CFG.greeting, 'them');
@@ -983,9 +1021,12 @@ function openChat() {
   }
   setTimeout(() => inputEl.focus(), 50);
 }
-function closeChat() { uiOpen = false; chatEl.hidden = true; }
+function closeChat() { chatEl.hidden = true; inputEl.blur(); }
 document.getElementById('chat-close').addEventListener('click', closeChat);
-addEventListener('keydown', e => { if (e.code === 'Escape' && uiOpen) closeChat(); });
+addEventListener('keydown', e => {
+  if (e.code !== 'Escape') return;
+  if (!doorEl.hidden) closeDoor(); else if (!chatEl.hidden) closeChat();
+});
 
 document.getElementById('chat-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -1017,6 +1058,7 @@ document.getElementById('chat-form').addEventListener('submit', async e => {
   }
 });
 
+// solid interior surfaces cast and receive; glass, LEDs and the city stay out of it
 // ================= FIRST-PERSON CONTROLS =================
 let yaw = 0, pitch = 0;
 let goalYaw = yaw, goalPitch = pitch;
@@ -1058,7 +1100,7 @@ function twoFingerState() {
 }
 
 el.addEventListener('pointerdown', e => {
-  if (uiOpen) return;
+  if (modalOpen) return;
   tap = { x: e.clientX, y: e.clientY, t: performance.now() };
   el.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, button: e.button, type: e.pointerType });
@@ -1094,7 +1136,7 @@ function endPointer(e) {
     if (moved < 9 && performance.now() - tap.t < 350) {
       const obj = pickAt(e.clientX, e.clientY);
       if (obj === nexie) openChat();
-      else if (obj === doorHit) leaveBuilding();
+      else if (obj === doorHit) askToLeave();
     }
   }
   tap = null;
@@ -1106,14 +1148,14 @@ el.addEventListener('pointercancel', endPointer);
 el.addEventListener('contextmenu', e => e.preventDefault());
 
 el.addEventListener('wheel', e => {
-  if (uiOpen) return;
+  if (modalOpen) return;
   e.preventDefault();
   const d = THREE.MathUtils.clamp(e.deltaY, -100, 100);
   walk(-d * 0.012, 0);
 }, { passive: false });
 
 const keys = new Set();
-addEventListener('keydown', e => { if (!uiOpen) keys.add(e.code); });
+addEventListener('keydown', e => { if (!modalOpen && !typing()) keys.add(e.code); });
 addEventListener('keyup', e => keys.delete(e.code));
 
 // ================= LOOP =================
@@ -1132,7 +1174,7 @@ el.addEventListener('pointermove', e => {
 const statsEl = document.getElementById('stats');
 let statsOn = false, frames = 0, statsT = 0, fps = 0;
 function toggleStats() { statsOn = !statsOn; statsEl.hidden = !statsOn; }
-addEventListener('keydown', e => { if (e.code === 'KeyP' && !uiOpen) toggleStats(); });
+addEventListener('keydown', e => { if (e.code === 'KeyP' && !modalOpen && !typing()) toggleStats(); });
 if (location.search.includes('stats')) toggleStats();          // ?stats=1 on any device
 
 document.addEventListener('visibilitychange', () => {
