@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Lobby</title>
+<style>
+  :root { --bg: #0a0a0b; --hint-bg: rgba(20,22,26,.85); --hint-fg: #d6dbe1; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+  canvas { display: block; touch-action: none; cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  #fade {
+    position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none;
+    transition: opacity .5s ease; z-index: 50;
+  }
+  #fade.on { opacity: 1; }
+  #chat {
+    position: fixed; right: 16px; bottom: 16px; width: min(380px, calc(100% - 32px));
+    max-height: min(60vh, 520px); display: flex; flex-direction: column; z-index: 40;
+    background: rgba(12,12,16,.92); border: 1px solid #2a2a33; border-radius: 12px;
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #e6e8ec;
+    box-shadow: 0 18px 50px rgba(0,0,0,.6);
+  }
+  #chat[hidden] { display: none; }
+  #chat-bar { display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px; border-bottom: 1px solid #23232b; }
+  #chat-name { letter-spacing: .14em; font-size: 12px; color: #b79cf2; text-transform: uppercase; }
+  #chat-close { background: none; border: 0; color: #8b8f99; font-size: 20px; cursor: pointer; line-height: 1; }
+  #chat-log { overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  #chat-log .msg { max-width: 85%; padding: 8px 11px; border-radius: 10px; white-space: pre-wrap; }
+  #chat-log .them { background: #1b1b23; align-self: flex-start; }
+  #chat-log .me { background: #3b3050; align-self: flex-end; }
+  #chat-log .sys { color: #8b8f99; font-size: 12px; align-self: center; }
+  #chat-form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid #23232b; }
+  #chat-input { flex: 1; background: #16161d; border: 1px solid #2a2a33; border-radius: 8px;
+    padding: 8px 10px; color: inherit; font: inherit; }
+  #chat-send { background: #4a3d6b; border: 0; border-radius: 8px; color: #fff;
+    padding: 8px 14px; font: inherit; cursor: pointer; }
+  #chat-send[disabled] { opacity: .5; cursor: default; }
+  #hint {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    background: var(--hint-bg); color: var(--hint-fg);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 8px 14px; border-radius: 8px; pointer-events: none;
+    max-width: calc(100% - 32px); text-align: center; transition: opacity .6s;
+  }
+</style>
+</head>
+<body>
+<div id="hint"></div>
+<div id="fade"></div>
+<div id="chat" hidden>
+  <div id="chat-bar"><span id="chat-name">Nexie</span><button id="chat-close" aria-label="Close">×</button></div>
+  <div id="chat-log"></div>
+  <form id="chat-form" autocomplete="off">
+    <input id="chat-input" type="text" placeholder="Say something…" maxlength="600">
+    <button id="chat-send" type="submit">Send</button>
+  </form>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/loaders/FontLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/geometries/TextGeometry.js"></script>
+<script>
+// ================= SETTINGS =================
+const LOOK_SPEED = 0.0035;
+const DESKTOP_LOOK_X = 1;    // 1: drag right turns left (grab). Set to -1 to flip.
+const DESKTOP_LOOK_Y = 1;
+const TOUCH_LOOK_X = 1;
+const TOUCH_LOOK_Y = 1;
+const EYE_HEIGHT = 1.7;
+const PLAYER_RADIUS = 0.4;
+const WALL_SHEEN = 0.45;     // gloss layer on the walls: 0 = matte, 1 = mirror-bright highlights
+const ARTWORK_URL = '';      // put a jpg/png path here, or just drag an image onto the page
+
+const isTouch = matchMedia('(pointer: coarse)').matches;
+const hint = document.getElementById('hint');
+hint.textContent = isTouch
+  ? 'One finger to look, two fingers to walk, tap Nexie or the doors'
+  : 'Drag to look, scroll or WASD to walk, click Nexie or the doors';
+setTimeout(() => hint.style.opacity = 0, 6000);
+
+// ================= RENDERER / SCENE =================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.localClippingEnabled = true;   // lets the falling glyphs be cut off by the lips
+document.body.appendChild(renderer.domElement);
+
+const SKY = 0x6a5c86;        // purple haze at the horizon
+const SKY_TOP = 0x1d1830;    // deep violet overhead
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(SKY, 200, 2700);
+
+// vertical gradient sky
+{
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#1b162c');
+  grad.addColorStop(0.42, '#2f2745');
+  grad.addColorStop(0.60, '#544a72');
+  grad.addColorStop(0.76, '#8a76a6');
+  grad.addColorStop(1, '#3b3352');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 4, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.mapping = THREE.EquirectangularReflectionMapping;
+  t.encoding = THREE.sRGBEncoding;
+  scene.background = t;
+}
+
+const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.05, 4000);
+camera.rotation.order = 'YXZ';
+
+// ================= ROOM DIMENSIONS =================
+const W = 20, D = 20, H = 10;
+const hw = W / 2, hd = D / 2;
+const T = 0.3; // wall thickness
+const WIN = { x0: -8, x1: 8, y0: 0.4, y1: H - 0.8 };
+
+const FLOOR = 9;             // height of the lobby floor above the ground outside
+
+let PARENT = scene;          // helpers add here (scene for the lobby, OUT for the world outside)
+const obstacles = [];
+function solid(obj) { obstacles.push(new THREE.Box3().setFromObject(obj)); return obj; }
+
+// ================= REFLECTION ENVIRONMENT =================
+// Small stand-in room with bright strips so glossy surfaces have something to reflect
+{
+  const env = new THREE.Scene();
+  const shell = new THREE.Mesh(new THREE.BoxGeometry(W, H, D),
+    new THREE.MeshBasicMaterial({ color: 0x0c0c0e, side: THREE.BackSide }));
+  shell.position.y = H / 2;
+  env.add(shell);
+  const white = new THREE.MeshBasicMaterial({ color: 0x6e6e6e });
+  for (let x = -6; x <= 6; x += 4) {
+    const s = new THREE.Mesh(new THREE.PlaneGeometry(0.35, 11), white);
+    s.rotation.x = Math.PI / 2; s.position.set(x, H - 0.05, 0);
+    env.add(s);
+  }
+  const win = new THREE.Mesh(new THREE.PlaneGeometry(WIN.x1 - WIN.x0, WIN.y1 - WIN.y0),
+    new THREE.MeshBasicMaterial({ color: 0x7b6b96 }));
+  win.position.set(0, (WIN.y0 + WIN.y1) / 2, -hd + 0.05);
+  env.add(win);
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(env, 0.02, 0.1, 100).texture;
+  pmrem.dispose();
+}
+
+// ================= MATERIALS =================
+function tileTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, 512, 512);
+  g.strokeStyle = '#8a8a8a';
+  g.lineWidth = 2;
+  for (let k = 0; k <= 512; k += 256) {
+    g.beginPath(); g.moveTo(k, 0); g.lineTo(k, 512); g.stroke();
+    g.beginPath(); g.moveTo(0, k); g.lineTo(512, k); g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(W / 4, D / 4);
+  t.encoding = THREE.sRGBEncoding;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return t;
+}
+
+const gloss = (color, extra = {}) => new THREE.MeshPhysicalMaterial({
+  color, roughness: 0.18, metalness: 0.1, clearcoat: 1, clearcoatRoughness: 0.04,
+  envMapIntensity: 1.4, ...extra
+});
+
+const M = {
+  floor:     gloss(0x0a0a0b, { map: tileTexture(), roughness: 0.34, clearcoatRoughness: 0.16, envMapIntensity: 0.55 }),
+  wall:      new THREE.MeshPhysicalMaterial({ color: 0x0c0c0d, roughness: 0.7, metalness: 0,
+               clearcoat: WALL_SHEEN, clearcoatRoughness: 0.38, envMapIntensity: 0 }),
+  ceiling:   new THREE.MeshPhysicalMaterial({ color: 0x0a0a0c, roughness: 0.85, metalness: 0,
+               clearcoat: WALL_SHEEN * 0.5, clearcoatRoughness: 0.5, envMapIntensity: 0 }),
+  black:     gloss(0x111113),
+  charcoal:  new THREE.MeshStandardMaterial({ color: 0x2a2b2e, roughness: 0.5 }),
+  grey:      new THREE.MeshStandardMaterial({ color: 0x6a6d72, roughness: 0.9 }),
+  lightGrey: new THREE.MeshStandardMaterial({ color: 0x9a9da2, roughness: 0.35 }),
+  frame:     new THREE.MeshStandardMaterial({ color: 0x151518, roughness: 0.3, metalness: 0.7 }),
+  steel:     new THREE.MeshStandardMaterial({ color: 0x9da1a8, roughness: 0.2, metalness: 1 }),
+  rug:       new THREE.MeshStandardMaterial({ color: 0x2e3034, roughness: 1 }),
+  glassTop:  gloss(0x050506, { roughness: 0.05 }),
+  glass:     new THREE.MeshPhysicalMaterial({ color: 0xdfeef7, roughness: 0.45, metalness: 0,
+               transparent: true, opacity: 0.05, depthWrite: false, envMapIntensity: 0 }),
+  led:       new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }),
+  curtain:   new THREE.MeshPhysicalMaterial({ color: 0xaecad8, roughness: 0.35, metalness: 0,
+               transparent: true, opacity: 0.09, depthWrite: false, envMapIntensity: 0 }),
+  leaf:      new THREE.MeshPhysicalMaterial({ color: 0x9fbccb, roughness: 0.25, metalness: 0,
+               transparent: true, opacity: 0.16, depthWrite: false, envMapIntensity: 0 }),
+};
+
+function box(w, h, d, mat, x, y, z, parent = PARENT) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
+}
+function cyl(rt, rb, h, mat, x, y, z, parent = PARENT, seg = 32) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
+}
+
+// ================= SHELL =================
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), M.floor);
+floor.rotation.x = -Math.PI / 2;
+scene.add(floor);
+
+box(W + 2 * T, T, D + 2 * T, M.ceiling, 0, H + T / 2, 0);            // ceiling
+box(T, H, D + 2 * T, M.wall, -hw - T / 2, H / 2, 0);                  // left wall
+box(T, H, D + 2 * T, M.wall,  hw + T / 2, H / 2, 0);                  // right wall
+// front wall: glazed curtain wall, two door bays in the middle
+{
+  const fz = hd + 0.1, BAYS = 4, bw = W / BAYS, DOOR_H = 3.2, TRANSOM = 6.6;
+  const pane = new THREE.Mesh(new THREE.PlaneGeometry(W, H), M.curtain);
+  pane.position.set(0, H / 2, fz + 0.02);
+  scene.add(pane);
+  for (let i = 0; i <= BAYS; i++) box(0.12, H, 0.32, M.frame, -hw + i * bw, H / 2, fz);   // mullions
+  box(W, 0.12, 0.32, M.frame, 0, DOOR_H, fz);                                            // door head
+  box(W, 0.12, 0.32, M.frame, 0, TRANSOM, fz);                                           // transom
+  box(W, 0.4, 0.34, M.black, 0, 0.2, fz);                                                // spandrel at the floor
+
+  // four door bays, a pair of swinging leaves in each
+  const DB = 2.5, lw = DB / 2 - 0.13;
+  for (const x of [-2 * DB, -DB, 0, DB, 2 * DB]) box(0.1, DOOR_H, 0.26, M.frame, x, DOOR_H / 2, fz - 0.02);  // jambs
+  for (const bay of [-3, -1, 1, 3]) {
+    const cx = bay * DB / 2;
+    for (const side of [-1, 1]) {
+      const lx = cx + side * (DB / 4 + 0.015);
+      box(lw, DOOR_H - 0.2, 0.05, M.leaf, lx, (DOOR_H - 0.2) / 2 + 0.06, fz - 0.06);      // glass leaf
+      box(lw, 0.07, 0.09, M.frame, lx, 0.09, fz - 0.06);                                  // bottom rail
+      box(lw, 0.07, 0.09, M.frame, lx, DOOR_H - 0.09, fz - 0.06);                         // top rail
+      box(0.05, DOOR_H - 0.6, 0.05, M.frame, lx + side * (lw / 2 - 0.02), DOOR_H / 2, fz - 0.06); // outer stile
+      box(0.045, 1.15, 0.045, M.steel, cx + side * 0.17, 1.05, fz - 0.17);                // pull, on the swinging edge
+      box(0.045, 0.045, 0.1, M.steel, cx + side * 0.17, 1.6, fz - 0.12);                  // handle standoffs
+      box(0.045, 0.045, 0.1, M.steel, cx + side * 0.17, 0.5, fz - 0.12);
+    }
+  }
+}
+
+// Window wall (back, behind the desk)
+const wz = -hd - T / 2;
+box(W + 2 * T, WIN.y0, T, M.wall, 0, WIN.y0 / 2, wz);
+box(W + 2 * T, H - WIN.y1, T, M.wall, 0, (WIN.y1 + H) / 2, wz);
+const sideW = hw + T + WIN.x0;
+box(sideW, WIN.y1 - WIN.y0, T, M.wall, -hw - T + sideW / 2, (WIN.y0 + WIN.y1) / 2, wz);
+box(sideW, WIN.y1 - WIN.y0, T, M.wall,  hw + T - sideW / 2, (WIN.y0 + WIN.y1) / 2, wz);
+
+// Window frame, mullions, glass
+const winH = WIN.y1 - WIN.y0, winW = WIN.x1 - WIN.x0, winY = (WIN.y0 + WIN.y1) / 2;
+const PANES = 4;
+box(winW + 0.2, 0.1, 0.4, M.frame, 0, WIN.y0, wz);
+box(winW + 0.2, 0.1, 0.4, M.frame, 0, WIN.y1, wz);
+for (let i = 0; i <= PANES; i++) box(0.08, winH, 0.4, M.frame, WIN.x0 + i * (winW / PANES), winY, wz);
+const glass = new THREE.Mesh(new THREE.PlaneGeometry(winW, winH), M.glass);
+glass.position.set(0, winY, wz);
+scene.add(glass);
+
+// ================= ENTRANCE STAIR (down to the plaza) =================
+{
+  const STEPS = Math.round(FLOOR / 0.18), RISE = FLOOR / STEPS, TREAD = 0.34, SW = 14;
+  box(SW, 0.3, 2.6, M.black, 0, -0.15, hd + 1.6);                       // landing outside the doors
+  box(SW, 0.03, 0.03, M.led, 0, 0.02, hd + 2.85);
+  for (let i = 1; i <= STEPS; i++) {
+    box(SW, RISE, TREAD, M.black, 0, -RISE * (i - 0.5), hd + 2.9 + TREAD * (i - 0.5));
+    if (i % 6 === 0) box(SW, 0.015, 0.015, M.led, 0, -RISE * (i - 1) - 0.01, hd + 2.9 + TREAD * (i - 1) + 0.01);
+  }
+  // sloped glass balustrades either side
+  const run = STEPS * TREAD, ang = Math.atan2(FLOOR, run), len = Math.hypot(run, FLOOR);
+  for (const side of [-1, 1]) {
+    for (const [off, mat, h, d] of [[0.5, M.glass, 1.0, 0.06], [1.02, M.black, 0.07, 0.07], [0.97, M.led, 0.015, 0.015]]) {
+      const m = box(d === 0.06 ? 0.06 : d, h, len, mat, side * (SW / 2 - 0.1), -FLOOR / 2 + off, hd + 2.9 + run / 2);
+      m.rotation.x = ang;
+    }
+  }
+  // facade below the doors
+  box(W + 2 * T, FLOOR, 0.4, M.black, 0, -FLOOR / 2, hd + 0.5);
+}
+
+// ================= LED LINES =================
+// ceiling strips, now with real light along each one
+for (let x = -6; x <= 6; x += 4) {
+  box(0.08, 0.02, 11, M.led, x, H - 0.01, 0);
+  for (const z of [-4, 0, 4]) {
+    const p = new THREE.PointLight(0xeef2ff, 0.3, 16, 2);
+    p.position.set(x, H - 0.15, z);
+    scene.add(p);
+  }
+}
+// ceiling perimeter
+box(0.03, 0.03, D - 0.2, M.led, -hw + 0.05, H - 0.25, 0);
+box(0.03, 0.03, D - 0.2, M.led,  hw - 0.05, H - 0.25, 0);
+// floor perimeter
+box(0.02, 0.02, D - 0.2, M.led, -hw + 0.03, 0.04, 0);
+box(0.02, 0.02, D - 0.2, M.led,  hw - 0.03, 0.04, 0);
+
+// Columns
+[[-7.6, -8.2], [7.6, -8.2], [-7.6, 7.6], [7.6, 7.6]].forEach(([x, z]) => {
+  solid(cyl(0.4, 0.4, H, M.black, x, H / 2, z));
+  cyl(0.405, 0.405, 0.03, M.led, x, 0.3, z);
+  cyl(0.405, 0.405, 0.03, M.led, x, H - 0.3, z);
+});
+
+// ================= FURNITURE =================
+function sofa(x, z, rotY, len = 2.6) {
+  const g = new THREE.Group();
+  box(len, 0.42, 0.9, M.charcoal, 0, 0.21, 0, g);
+  box(len, 0.5, 0.2, M.charcoal, 0, 0.65, -0.35, g);
+  box(0.18, 0.62, 0.9, M.charcoal, -len / 2 + 0.09, 0.31, 0, g);
+  box(0.18, 0.62, 0.9, M.charcoal,  len / 2 - 0.09, 0.31, 0, g);
+  g.position.set(x, 0, z); g.rotation.y = rotY;
+  scene.add(g); solid(g);
+}
+function armchair(x, z, rotY) {
+  const g = new THREE.Group();
+  box(0.85, 0.42, 0.8, M.grey, 0, 0.21, 0, g);
+  box(0.85, 0.5, 0.16, M.grey, 0, 0.65, -0.32, g);
+  box(0.12, 0.6, 0.8, M.grey, -0.36, 0.3, 0, g);
+  box(0.12, 0.6, 0.8, M.grey,  0.36, 0.3, 0, g);
+  g.position.set(x, 0, z); g.rotation.y = rotY;
+  scene.add(g); solid(g);
+}
+function coffeeTable(x, z) {
+  const g = new THREE.Group();
+  box(1.4, 0.04, 0.8, M.glassTop, 0, 0.42, 0, g);
+  [[-0.62, -0.32], [0.62, -0.32], [-0.62, 0.32], [0.62, 0.32]].forEach(([a, b]) =>
+    box(0.03, 0.4, 0.03, M.steel, a, 0.2, b, g));
+  g.position.set(x, 0, z);
+  scene.add(g); solid(g);
+}
+function rug(x, z, w, d) {
+  const r = new THREE.Mesh(new THREE.PlaneGeometry(w, d), M.rug);
+  r.rotation.x = -Math.PI / 2;
+  r.position.set(x, 0.005, z);
+  scene.add(r);
+}
+function seatingGroup(x, z) {
+  rug(x, z, 5, 3.8);
+  sofa(x, z - 1.3, 0);
+  armchair(x - 1.9, z + 0.3, Math.PI / 2);
+  armchair(x + 1.9, z + 0.3, -Math.PI / 2);
+  coffeeTable(x, z + 0.1);
+}
+// (seating removed)
+
+// Reception desk (in front of the window, facing into the lobby)
+{
+  const g = new THREE.Group();
+  box(6, 1.1, 1.0, M.black, 0, 0.55, 0, g);
+  box(6.2, 0.05, 1.3, M.lightGrey, 0, 1.125, 0.1, g);
+  box(6, 0.02, 0.02, M.led, 0, 0.08, 0.51, g);
+  g.position.set(0, 0, -6.5);
+  scene.add(g); solid(g);
+}
+
+// Rain wall (opposite the elevators): matrix rain in purple and silver, in a frame
+const ART = { w: 7.3, h: 4.5, y: 5.0, z: 0 };   // panel fills the frame edge to edge
+
+const rain = (() => {
+  const c = document.createElement('canvas');
+  c.width = 1024; c.height = 631;
+  const g = c.getContext('2d');
+  const FS = 17;
+  const cols = Math.floor(c.width / FS);
+  const drops = Array.from({ length: cols }, () => Math.random() * -50);
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*+-=[]{}|;:<>?/!～！￥（）【】';
+  const ch = () => chars.charAt(Math.floor(Math.random() * chars.length));
+  g.fillStyle = '#000'; g.fillRect(0, 0, c.width, c.height);
+  const tex = new THREE.CanvasTexture(c);
+  tex.encoding = THREE.sRGBEncoding;
+  function step() {
+    g.fillStyle = 'rgba(0,0,0,0.2)';             // heavier fade = shorter, thinner trails
+    g.fillRect(0, 0, c.width, c.height);
+    g.font = FS + 'px monospace';
+    for (let i = 0; i < cols; i++) {
+      const x = i * FS, y = drops[i] * FS;
+      g.fillStyle = 'rgba(232,238,246,0.95)';    // silver head
+      g.fillText(ch(), x, y);
+      g.fillStyle = 'rgba(176,138,240,0.55)';    // purple behind it
+      g.fillText(ch(), x, y - FS);
+      g.fillStyle = 'rgba(124,90,188,0.22)';
+      g.fillText(ch(), x, y - FS * 2);
+      if (y > c.height && Math.random() > 0.975) drops[i] = 0;
+      drops[i] += 1;                             // exactly one row per step, so glyphs stay crisp
+    }
+  }
+  for (let i = 0; i < 260; i++) step();          // drawn once, then held frozen
+  tex.needsUpdate = true;
+  let last = 0;
+  function update(t) {
+    if (t - last < 150) return;                  // a row every 150 ms
+    last = t;
+    step();
+    tex.needsUpdate = true;
+  }
+  return { tex, update };
+})();
+
+const artMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: rain.tex, emissiveMap: rain.tex, emissive: 0xffffff,
+  emissiveIntensity: 0.75, roughness: 0.6, metalness: 0, envMapIntensity: 0
+});
+const artPlane = new THREE.Mesh(new THREE.PlaneGeometry(ART.w, ART.h), artMat);
+artPlane.rotation.y = -Math.PI / 2;
+artPlane.position.set(hw - 0.012, ART.y, ART.z);
+scene.add(artPlane);
+
+// spill lip at the top, tiny, and the catch basin lip at the bottom
+const LIP_W = ART.w + 0.22;
+box(0.5, 0.09, LIP_W, M.steel, hw - 0.27, ART.y + ART.h / 2 + 0.045, ART.z);          // spill lip
+box(0.06, 0.05, LIP_W, M.black, hw - 0.5, ART.y + ART.h / 2 + 0.02, ART.z);           // its front edge
+box(0.62, 0.12, LIP_W, M.steel, hw - 0.33, ART.y - ART.h / 2 - 0.06, ART.z);          // catch basin
+box(0.05, 0.2, LIP_W, M.black, hw - 0.62, ART.y - ART.h / 2 - 0.02, ART.z);           // basin front wall
+for (const zz of [-LIP_W / 2, LIP_W / 2]) {                                            // basin end caps
+  box(0.62, 0.2, 0.05, M.black, hw - 0.33, ART.y - ART.h / 2 - 0.02, ART.z + zz);
+  box(0.5, 0.07, 0.05, M.black, hw - 0.27, ART.y + ART.h / 2 + 0.055, ART.z + zz);
+}
+
+// 3D glyphs falling in front of the panel, lip to lip
+const glyphRain = (() => {
+  const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789@#$%&*+=<>?!'.split('');
+  const maps = CHARS.map(ch => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const g = c.getContext('2d');
+    g.font = 'bold 52px monospace';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillStyle = '#ffffff';
+    g.fillText(ch, 32, 34);
+    const t = new THREE.CanvasTexture(c);
+    t.encoding = THREE.sRGBEncoding;
+    return t;
+  });
+  const pick = () => maps[Math.floor(Math.random() * maps.length)];
+
+  const TOP = ART.y + ART.h / 2;          // underside of the spill lip
+  const BOT = ART.y - ART.h / 2;          // top of the catch basin
+  const clips = [                          // glyphs are sliced off outside the two lips
+    new THREE.Plane(new THREE.Vector3(0, -1, 0), TOP),
+    new THREE.Plane(new THREE.Vector3(0, 1, 0), -BOT)
+  ];
+  const COLS = 24, TRAIL = 8, DY = 0.25;
+  const streams = [];
+  for (let i = 0; i < COLS; i++) {
+    const z = ART.z - ART.w / 2 + 0.25 + i * ((ART.w - 0.5) / (COLS - 1));
+    const x = hw - 0.3 - (i % 4) * 0.055;               // stands well off the panel
+    const glyphs = [];
+    for (let k = 0; k < TRAIL; k++) {
+      const head = k === 0;
+      const mat = new THREE.MeshBasicMaterial({
+        map: pick(), transparent: true, depthWrite: false, toneMapped: false, clippingPlanes: clips,
+        color: head ? 0xe8eef6 : 0xa77ce8,               // silver head, purple tail
+        opacity: 0
+      });
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.3), mat);
+      m.userData.base = head ? 1 : 0.74 - k * 0.085;
+      m.rotation.y = -Math.PI / 2;
+      m.position.set(x, TOP + k * DY, z);
+      scene.add(m);
+      glyphs.push(m);
+    }
+    const span = (TOP - BOT) + TRAIL * DY + 2.5;
+    streams.push({ glyphs, y: BOT - TRAIL * DY + Math.random() * span, speed: 0.85 + Math.random() * 0.8, t: 0 });
+  }
+
+  function update(dt) {
+    for (const st of streams) {
+      st.y -= st.speed * dt;
+      st.t += dt;
+      if (st.t > 0.14) {                                  // flicker the characters
+        st.t = 0;
+        st.glyphs[Math.floor(Math.random() * TRAIL)].material.map = pick();
+      }
+      if (st.y + (TRAIL - 1) * DY < BOT) {          // whole column has sunk into the basin
+        st.y = TOP + 0.1 + Math.random() * 2.2;         // head restarts hidden above the lip
+        st.speed = 0.85 + Math.random() * 0.8;
+      }
+      st.glyphs.forEach((m, k) => {
+        const y = st.y + k * DY;                             // k 0 is the leading silver glyph
+        m.position.y = y;                                    // clipped at both lips
+        const outOfLip = Math.min(Math.max((TOP - y) / 0.5, 0), 1);   // bleeds out of the top lip
+        const intoBasin = Math.min(Math.max((y - BOT) / 0.45, 0), 1); // soaks into the basin
+        m.material.opacity = m.userData.base * outOfLip * intoBasin;
+      });
+    }
+  }
+  return { update };
+})();
+
+// drop a jpg/png on the page to put an image here instead of the rain
+function setArtwork(url) {
+  new THREE.TextureLoader().load(url, t => {
+    t.encoding = THREE.sRGBEncoding;
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    artMat.map = t;
+    artMat.emissiveMap = t;
+    artMat.emissiveIntensity = 0.45;
+    artMat.needsUpdate = true;
+  });
+}
+if (ARTWORK_URL) setArtwork(ARTWORK_URL);
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith('image/')) setArtwork(URL.createObjectURL(f));
+});
+
+// Building name above the elevators: N E X U S with BUILDING under it
+const SIGN = { x: -hw, z: -0.75, topY: 6.35, botY: 5.2 };
+let signPlane;
+{
+  const c = document.createElement('canvas');
+  c.width = 2048; c.height = 768;
+  const g = c.getContext('2d');
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  const chrome = (y0, y1) => {
+    const gr = g.createLinearGradient(0, y0, 0, y1);
+    gr.addColorStop(0.00, '#ffffff');
+    gr.addColorStop(0.30, '#dfe4ea');
+    gr.addColorStop(0.49, '#6d747e');
+    gr.addColorStop(0.51, '#2f343b');
+    gr.addColorStop(0.62, '#9aa1aa');
+    gr.addColorStop(0.85, '#f2f5f8');
+    gr.addColorStop(1.00, '#b9c0c8');
+    return gr;
+  };
+  const line = (text, px, y, w) => {
+    g.font = `600 ${px}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+    g.fillStyle = chrome(y - px * 0.5, y + px * 0.5);
+    g.fillText(text, 1024, y, w);
+    g.lineWidth = 4; g.strokeStyle = '#eaf0f6'; g.strokeText(text, 1024, y, w);
+    g.lineWidth = 2; g.strokeStyle = 'rgba(20,24,30,0.9)'; g.strokeText(text, 1024, y, w);
+  };
+  line('N E X U S', 250, 270, 1700);
+  line('B U I L D I N G', 78, 470, 900);
+
+  const t = new THREE.CanvasTexture(c);
+  t.encoding = THREE.sRGBEncoding;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  signPlane = new THREE.Mesh(new THREE.PlaneGeometry(11.0, 4.13),
+    new THREE.MeshBasicMaterial({ map: t, transparent: true, toneMapped: false, depthWrite: false }));
+  signPlane.rotation.y = Math.PI / 2;
+  signPlane.position.set(SIGN.x + 0.16, (SIGN.topY + SIGN.botY) / 2 + 0.25, SIGN.z);
+  scene.add(signPlane);
+}
+
+// real extruded letters; the flat sign above stays as a fallback until these load
+if (THREE.FontLoader && THREE.TextGeometry) {
+  const loader = new THREE.FontLoader();
+  const CDN = 'https://cdn.jsdelivr.net/npm/three@0.147.0/examples/fonts/';
+  loader.load(CDN + 'helvetiker_regular.typeface.json', regular => {
+    loader.load(CDN + 'helvetiker_bold.typeface.json', bold => {
+      const chromeMat = new THREE.MeshPhysicalMaterial({
+        color: 0xd2d8df, metalness: 1, roughness: 0.15,
+        clearcoat: 0.6, clearcoatRoughness: 0.1, envMapIntensity: 1.7
+      });
+      const makeLine = (text, font, targetW, depth) => {
+        const geo = new THREE.TextGeometry(text, {
+          font, size: 1, height: depth, curveSegments: 5,
+          bevelEnabled: true, bevelThickness: depth * 0.16, bevelSize: depth * 0.12, bevelSegments: 2
+        });
+        geo.center();
+        geo.computeBoundingBox();
+        const bb = geo.boundingBox;
+        const k = targetW / (bb.max.x - bb.min.x);
+        const mesh = new THREE.Mesh(geo, chromeMat);
+        mesh.scale.setScalar(k);
+        mesh.rotation.y = Math.PI / 2;
+        // sit the back face flat on the wall instead of floating off it
+        const deep = (bb.max.z - bb.min.z) * k;
+        mesh.position.set(SIGN.x + deep / 2 + 0.005, 0, SIGN.z);
+        scene.add(mesh);
+        return { mesh, halfH: (bb.max.y - bb.min.y) * k / 2 };
+      };
+      const nx = makeLine('N E X U S', regular, 9.0, 0.11);       // lighter weight, sits flatter
+      const bd = makeLine('B U I L D I N G', bold, 5.4, 0.12);    // thicker slab
+      nx.mesh.position.y = SIGN.topY;
+      bd.mesh.position.y = SIGN.topY - nx.halfH - 0.55 - bd.halfH;
+      signPlane.visible = false;
+    }, undefined, () => {});
+  }, undefined, () => {});
+}
+
+// Elevators (left wall)
+[-4.65, -0.75, 3.15].forEach(z => {
+  box(0.12, 3.3, 2.3, M.frame, -hw + 0.06, 1.65, z);
+  box(0.06, 3.0, 0.97, M.steel, -hw + 0.14, 1.5, z - 0.5);
+  box(0.06, 3.0, 0.97, M.steel, -hw + 0.14, 1.5, z + 0.5);
+  box(0.02, 0.02, 2.3, M.led, -hw + 0.13, 3.32, z);
+  box(0.04, 0.25, 0.12, M.charcoal, -hw + 0.12, 1.2, z + 1.4);
+});
+
+// ================= OUTSIDE: PARK + DISTANT CITY =================
+const flat = (c, extra = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 1, envMapIntensity: 0, ...extra });
+const greyBack = [0x3b3648, 0x443f52, 0x332f3f].map(c =>
+  new THREE.MeshStandardMaterial({ color: c, roughness: 0.6, metalness: 0.2, envMapIntensity: 0 }));
+
+// facade below the window, down to the ground
+box(W + 2 * T, FLOOR, 0.4, M.black, 0, -FLOOR / 2, -hd - 0.35);
+box(W + 2 * T, 0.03, 0.03, M.led, 0, -0.35, -hd - 0.56);
+box(W + 4, 0.35, 5, M.black, 0, -FLOOR + 3.8, -hd - 2.5);   // entrance canopy
+
+const OUT = new THREE.Group();          // everything outside sits a storey lower
+OUT.position.y = -FLOOR;
+scene.add(OUT);
+PARENT = OUT;
+
+// base ground
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), flat(0x5a5666));
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.05;
+OUT.add(ground);
+
+// plaza right outside the window
+box(90, 0.02, 30, flat(0x6f6b78), 0, -0.03, -26);
+
+// raised entrance terrace in front of the building
+box(30, 1.2, 10, flat(0x5e5a66), 0, 0.6, -15.5);
+box(30, 0.03, 0.03, M.led, 0, 1.22, -10.55);
+
+// outdoor steps down to the sidewalk
+for (let i = 0; i < 6; i++)
+  box(14, 0.2, 0.45, flat(0x6b6772), 0, 1.1 - i * 0.2, -20.7 - i * 0.45);
+box(0.12, 1.1, 2.9, flat(0x3c3944), -7.06, 0.55, -21.9);
+box(0.12, 1.1, 2.9, flat(0x3c3944),  7.06, 0.55, -21.9);
+
+// sidewalk running from the foot of the steps out into the park
+box(8, 0.02, 20, flat(0x8e8a80), 0, -0.01, -33.5);
+
+// big central park lawn
+const lawn = new THREE.Mesh(new THREE.PlaneGeometry(180, 300), flat(0x3f5a3e));
+lawn.rotation.x = -Math.PI / 2;
+lawn.position.set(0, -0.02, -190);
+OUT.add(lawn);
+
+// paths across the lawn
+box(6, 0.02, 306, flat(0x8e8a80), 0, -0.01, -193);
+box(180, 0.02, 5, flat(0x8e8a80), 0, -0.01, -150);
+
+// ring road at the far edge of the park
+box(1400, 0.02, 90, flat(0x2f2f36), 0, -0.011, -390);
+box(1400, 0.02, 0.6, flat(0x4a4a52), 0, -0.007, -347);
+box(1400, 0.02, 0.6, flat(0x4a4a52), 0, -0.007, -433);
+for (let x = -690; x < 690; x += 26) box(14, 0.02, 0.5, flat(0x9c9484), x, -0.006, -390);
+box(14, 0.02, 320, flat(0x4a4852), -104, -0.01, -190);
+box(14, 0.02, 320, flat(0x4a4852),  104, -0.01, -190);
+
+let seed = 7;
+const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const cityMats = [0x101015, 0x15151c, 0x0b0b10, 0x1b1b24, 0x121219].map(c =>
+  new THREE.MeshStandardMaterial({ color: c, roughness: 0.4, metalness: 0.5, envMapIntensity: 0 }));
+
+// dark city, far behind the park
+[
+  { z: -420,  spread: 1400, count: 34, hMin: 60,  hMax: 170 },
+  { z: -650,  spread: 1900, count: 38, hMin: 110, hMax: 280 },
+  { z: -950,  spread: 2600, count: 40, hMin: 140, hMax: 260 },
+].forEach(row => {
+  for (let i = 0; i < row.count; i++) {
+    const w = 28 + rand() * 46, d = 28 + rand() * 46;
+    const h = row.hMin + rand() * (row.hMax - row.hMin);
+    const x = -row.spread / 2 + (i + rand() * 0.7) * (row.spread / row.count);
+    const z = row.z - rand() * 120;
+    if (Math.abs(x) - w / 2 < (row.z > -600 ? 78 : 56)) continue;   // keep footprints off the avenue
+    if (z + d / 2 > -448 && z - d / 2 < -332) continue;             // and off the cross street
+    box(w, h, d, cityMats[Math.floor(rand() * cityMats.length)], x, h / 2, z);
+    if (rand() > 0.55) box(w * 0.45, h * 0.18, d * 0.45, cityMats[0], x, h + h * 0.09, z);
+    if (rand() > 0.8) box(2, h * 0.25, 2, cityMats[1], x, h + h * 0.12, z); // spire
+  }
+});
+
+// tree lines along the main path, set well back from it
+for (let z = -60; z >= -330; z -= 18) {
+  for (const x of [-82, 82]) {
+    cyl(0.22, 0.3, 4.5, flat(0x241f1c), x, 2.25, z, OUT, 8);
+    const top = new THREE.Mesh(new THREE.IcosahedronGeometry(3.1, 1), flat(0x2f4a30));
+    top.position.set(x, 6.4, z);
+    top.scale.set(1, 1.15, 1);
+    OUT.add(top);
+  }
+}
+
+// plaza at the foot of the entrance stair
+box(120, 0.02, 70, flat(0x6a6672), 0, -0.03, 46);
+box(10, 0.02, 60, flat(0x8e8a80), 0, -0.01, 60);
+
+// a few blocks behind the building so that side isn't empty
+for (let i = 0; i < 12; i++) {
+  const w = 26 + rand() * 30, d = 26 + rand() * 26;        // kept well inside the lot
+  const h = 60 + rand() * 130;
+  const x = -330 + i * 62 + rand() * 12;                   // 62 m lots, no overlap
+  const z = 170 + (i % 2) * 150 + rand() * 50;             // two staggered depth bands
+  box(w, h, d, greyBack[i % 3], x, h / 2, z);
+}
+
+// street running from the end of the sidewalk straight out to the saucer tower
+box(90, 0.02, 1470, flat(0x2f2f36), 0, -0.012, -1080);
+box(0.6, 0.02, 1470, flat(0x4a4a52), -43, -0.008, -1080);
+box(0.6, 0.02, 1470, flat(0x4a4a52),  43, -0.008, -1080);
+for (let z = -360; z > -1800; z -= 26) box(0.5, 0.02, 14, flat(0x9c9484), 0, -0.006, z);
+
+// low blocks lining both sides of the lawn, spaced so they never overlap
+const LOT = 44;                                  // one building per lot, depth kept under the lot size
+for (let z = -20; z >= -330; z -= LOT) {
+  for (const side of [-1, 1]) {
+    const d = 16 + rand() * 12;                  // 16-28 deep, well inside the 44 m lot
+    const w = 16 + rand() * 14, h = 11 + rand() * 24;
+    box(w, h, d, greyBack[Math.floor(rand() * 3)], side * (108 + rand() * 16), h / 2, z - rand() * 6);
+    if (rand() > 0.4) {                          // second rank, its own lot behind
+      const d2 = 20 + rand() * 14, w2 = 20 + rand() * 18, h2 = 24 + rand() * 34;
+      box(w2, h2, d2, greyBack[Math.floor(rand() * 3)], side * (162 + rand() * 26), h2 / 2, z - 14 - rand() * 8);
+    }
+  }
+}
+
+// grey mid-rise blocks, set well back from both sides of the lawn
+const greyMats = [0x3b3648, 0x443f52, 0x332f3f, 0x4c4659, 0x3f3a4c].map(c =>
+  new THREE.MeshStandardMaterial({ color: c, roughness: 0.55, metalness: 0.25, envMapIntensity: 0 }));
+for (let z = -70; z >= -340; z -= 66) {
+  for (const side of [-1, 1]) {
+    const w = 30 + rand() * 18, d = 24 + rand() * 14, h = 22 + rand() * 46;
+    const x = side * (215 + rand() * 45);
+    const zz = Math.min(z + rand() * 16, -335 + d / 2 - 6);
+    box(w, h, d, greyMats[Math.floor(rand() * greyMats.length)], x, h / 2, zz);
+    if (rand() > 0.5) box(w * 0.5, h * 0.12, d * 0.5, greyMats[1], x, h + h * 0.06, zz);
+  }
+}
+
+// towers lining the avenue, evenly spaced the whole way out to the saucer tower
+for (const side of [-1, 1]) {
+  for (let i = 0; i < 12; i++) {
+    const z = -455 - i * 82 - rand() * 24;
+    const w = 26 + rand() * 26, d = 26 + rand() * 26;
+    let h = 120 + rand() * 190;
+    if (side > 0 && i % 3 === 0) h = 250 + rand() * 150;      // tall ones mixed in on the right
+    if (i < 2) h = 50 + rand() * 40;                          // both near corners stay low
+    const x = side * (50 + w / 2 + rand() * 22);          // right up against the kerb
+    box(w, h, d, cityMats[Math.floor(rand() * cityMats.length)], x, h / 2, z, OUT);
+    if (rand() > 0.55) box(w * 0.45, h * 0.13, d * 0.45, cityMats[0], x, h + h * 0.065, z, OUT);
+    if (rand() > 0.5) {                                    // second rank behind it
+      const w2 = 34 + rand() * 34, d2 = 34 + rand() * 34, h2 = 200 + rand() * 230;
+      box(w2, h2, d2, cityMats[Math.floor(rand() * cityMats.length)],
+          side * (190 + rand() * 150), h2 / 2, z - 70 - rand() * 90, OUT);
+    }
+  }
+}
+
+// landmark tower, straight down the sidewalk: skinny neck, saucer top
+{
+  const m = new THREE.MeshStandardMaterial({ color: 0x212429, roughness: 0.45, metalness: 0.35, envMapIntensity: 0 });
+  const m2 = new THREE.MeshStandardMaterial({ color: 0x191b1f, roughness: 0.5, metalness: 0.35, envMapIntensity: 0 });
+  const TX = 0, TZ = -1800;
+  cyl(7, 21, 240, m, TX, 120, TZ, OUT, 20);       // tapered shaft
+  cyl(4, 6.5, 64, m2, TX, 272, TZ, OUT, 16);      // skinny neck
+  cyl(20, 26, 4, m, TX, 302, TZ, OUT, 28);        // saucer underside
+  cyl(25, 20, 5.5, m, TX, 306.5, TZ, OUT, 28);    // saucer body
+  cyl(11, 18, 5, m2, TX, 311.5, TZ, OUT, 24);     // saucer crown
+  cyl(0.8, 2.8, 48, m2, TX, 338, TZ, OUT, 10);    // spire
+  const ring = new THREE.Mesh(new THREE.CylinderGeometry(26.5, 26.5, 0.6, 30),
+    new THREE.MeshBasicMaterial({ color: 0xb79cf2, toneMapped: false }));
+  ring.position.set(TX, 304.3, TZ);
+  OUT.add(ring);
+}
+
+
+
+PARENT = scene;
+
+// ================= LIGHTS (no shadows) =================
+scene.add(new THREE.HemisphereLight(0xa192bd, 0x2a2436, 0.45));
+scene.add(new THREE.AmbientLight(0xffffff, 0.12));
+
+const sun = new THREE.DirectionalLight(0xd8cdf0, 0.6);
+sun.position.set(-10, 20, -30);
+scene.add(sun);
+
+
+// ================= NEXIE + CLICKABLE DOORS =================
+const CFG = {
+  name: 'Nexie',
+  image: 'nexie.png',
+  position: [1.2, 0, -7.6],       // behind the desk
+  height: 1.75,
+  greeting: "Welcome to the Nexus District. First time here?",
+  endpoint: '',                    // your Cloudflare Worker URL
+  doorUrl: 'https://shaden.technology/nexus/'
+};
+let uiOpen = false;
+
+// placeholder silhouette until nexie.png is in place
+function placeholderTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 1024;
+  const g = c.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, 1024);
+  grd.addColorStop(0, '#b79cf2'); grd.addColorStop(1, '#4a3d6b');
+  g.fillStyle = grd;
+  g.beginPath(); g.arc(256, 190, 92, 0, Math.PI * 2); g.fill();          // head
+  g.beginPath();
+  g.moveTo(256, 290); g.bezierCurveTo(150, 330, 120, 560, 132, 1010);
+  g.lineTo(380, 1010); g.bezierCurveTo(392, 560, 362, 330, 256, 290);
+  g.fill();
+  g.font = '600 46px system-ui, sans-serif'; g.textAlign = 'center';
+  g.fillStyle = 'rgba(12,12,16,.85)'; g.fillText('NEXIE', 256, 700);
+  const t = new THREE.CanvasTexture(c);
+  t.encoding = THREE.sRGBEncoding;
+  return t;
+}
+
+const nexie = new THREE.Mesh(
+  new THREE.PlaneGeometry(1, 1),
+  new THREE.MeshBasicMaterial({ map: placeholderTexture(), transparent: true, alphaTest: 0.35, toneMapped: false })
+);
+scene.add(nexie);
+const nexieShadow = new THREE.Mesh(
+  new THREE.CircleGeometry(0.45, 24),
+  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.45, depthWrite: false })
+);
+nexieShadow.rotation.x = -Math.PI / 2;
+scene.add(nexieShadow);
+
+function placeNexie() {
+  const [px, , pz] = CFG.position;
+  const img = nexie.material.map.image;
+  const aspect = img && img.height ? img.width / img.height : 0.5;
+  const h = CFG.height, w = h * aspect;
+  nexie.geometry.dispose();
+  nexie.geometry = new THREE.PlaneGeometry(w, h);
+  nexie.position.set(px, h / 2, pz);                  // feet on the floor
+  nexieShadow.position.set(px, 0.012, pz);
+  nexieShadow.scale.setScalar(Math.max(0.8, w / 0.9));
+}
+placeNexie();
+
+// invisible hit box across the entrance doors
+const doorHit = new THREE.Mesh(new THREE.BoxGeometry(10, 3.2, 0.4),
+  new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }));
+doorHit.position.set(0, 1.6, hd - 0.15);
+scene.add(doorHit);
+
+// config file: lets you move her, rename her, and set the worker URL without touching this file
+fetch('nexie.json').then(r => r.ok ? r.json() : null).then(cfg => {
+  if (!cfg) return;
+  Object.assign(CFG, cfg);
+  document.getElementById('chat-name').textContent = CFG.name || 'Nexie';
+  if (CFG.image) {
+    new THREE.TextureLoader().load(CFG.image, t => {
+      t.encoding = THREE.sRGBEncoding;
+      t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      nexie.material.map = t;
+      nexie.material.needsUpdate = true;
+      placeNexie();
+    }, undefined, () => placeNexie());
+  } else placeNexie();
+  placeNexie();
+}).catch(() => {});
+
+// ---- click handling: a tap that isn't a drag ----
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+function pickAt(cx, cy) {
+  ndc.set((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const hit = raycaster.intersectObjects([nexie, doorHit], false)[0];
+  return hit ? hit.object : null;
+}
+function leaveBuilding() {
+  document.getElementById('fade').classList.add('on');
+  setTimeout(() => { location.href = CFG.doorUrl; }, 520);
+}
+
+// ---- chat overlay (history lives in memory only) ----
+const chatEl = document.getElementById('chat');
+const logEl = document.getElementById('chat-log');
+const inputEl = document.getElementById('chat-input');
+const sendEl = document.getElementById('chat-send');
+const history = [];
+function addMsg(text, cls) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  d.textContent = text;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+  return d;
+}
+function openChat() {
+  uiOpen = true;
+  chatEl.hidden = false;
+  if (!history.length) {
+    addMsg(CFG.greeting, 'them');
+    history.push({ role: 'assistant', content: CFG.greeting });
+  }
+  setTimeout(() => inputEl.focus(), 50);
+}
+function closeChat() { uiOpen = false; chatEl.hidden = true; }
+document.getElementById('chat-close').addEventListener('click', closeChat);
+addEventListener('keydown', e => { if (e.code === 'Escape' && uiOpen) closeChat(); });
+
+document.getElementById('chat-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const text = inputEl.value.trim();
+  if (!text) return;
+  inputEl.value = '';
+  addMsg(text, 'me');
+  history.push({ role: 'user', content: text });
+  if (!CFG.endpoint) { addMsg('No chat endpoint configured yet.', 'sys'); return; }
+  sendEl.disabled = true;
+  const thinking = addMsg('…', 'them');
+  try {
+    const res = await fetch(CFG.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: history })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const reply = data.reply || data.choices?.[0]?.message?.content || '…';
+    thinking.textContent = reply;
+    history.push({ role: 'assistant', content: reply });
+  } catch (err) {
+    thinking.remove();
+    addMsg("Couldn't reach Nexie just now.", 'sys');
+  } finally {
+    sendEl.disabled = false;
+    inputEl.focus();
+  }
+});
+
+// ================= FIRST-PERSON CONTROLS =================
+let yaw = 0, pitch = 0;
+let goalYaw = yaw, goalPitch = pitch;
+const goal = new THREE.Vector3(0, EYE_HEIGHT, 7.5);
+camera.position.copy(goal);
+
+function look(dx, dy, sx, sy) {
+  goalYaw += dx * LOOK_SPEED * sx;
+  goalPitch = THREE.MathUtils.clamp(goalPitch + dy * LOOK_SPEED * sy, -1.3, 1.3);
+}
+function walk(forward, right) {
+  const s = Math.sin(goalYaw), c = Math.cos(goalYaw);
+  goal.x += -s * forward + c * right;
+  goal.z += -c * forward - s * right;
+  constrain();
+}
+function constrain() {
+  const r = PLAYER_RADIUS;
+  goal.x = THREE.MathUtils.clamp(goal.x, -hw + r, hw - r);
+  goal.z = THREE.MathUtils.clamp(goal.z, -hd + r + 0.3, hd - r);
+  for (const b of obstacles) {
+    const x0 = b.min.x - r, x1 = b.max.x + r, z0 = b.min.z - r, z1 = b.max.z + r;
+    if (goal.x > x0 && goal.x < x1 && goal.z > z0 && goal.z < z1) {
+      const pl = goal.x - x0, pr = x1 - goal.x, pb = goal.z - z0, pf = z1 - goal.z;
+      const m = Math.min(pl, pr, pb, pf);
+      if (m === pl) goal.x = x0; else if (m === pr) goal.x = x1;
+      else if (m === pb) goal.z = z0; else goal.z = z1;
+    }
+  }
+}
+
+const el = renderer.domElement;
+const pointers = new Map();
+let pinchDist = 0, midX = 0, midY = 0;
+
+function twoFingerState() {
+  const [a, b] = [...pointers.values()];
+  return { dist: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+}
+
+el.addEventListener('pointerdown', e => {
+  if (uiOpen) return;
+  tap = { x: e.clientX, y: e.clientY, t: performance.now() };
+  el.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, button: e.button, type: e.pointerType });
+  if (pointers.size === 2) ({ dist: pinchDist, mx: midX, my: midY } = twoFingerState());
+});
+
+let tap = null;
+el.addEventListener('pointermove', e => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+
+  if (pointers.size === 1) {
+    if (p.type === 'mouse') {
+      if (p.button === 2) walk(dy * 0.02, -dx * 0.02);
+      else look(dx, dy, DESKTOP_LOOK_X, DESKTOP_LOOK_Y);
+    } else {
+      look(dx, dy, TOUCH_LOOK_X, TOUCH_LOOK_Y);
+    }
+  } else if (pointers.size === 2) {
+    const s = twoFingerState();
+    const k = 0.025;
+    walk((s.my - midY) * k + (s.dist - pinchDist) * 0.03, -(s.mx - midX) * k);
+    pinchDist = s.dist; midX = s.mx; midY = s.my;
+  }
+});
+
+function endPointer(e) {
+  if (tap && pointers.size === 1) {                 // a tap, not a drag: pick what's under it
+    const moved = Math.hypot(e.clientX - tap.x, e.clientY - tap.y);
+    if (moved < 9 && performance.now() - tap.t < 350) {
+      const obj = pickAt(e.clientX, e.clientY);
+      if (obj === nexie) openChat();
+      else if (obj === doorHit) leaveBuilding();
+    }
+  }
+  tap = null;
+  pointers.delete(e.pointerId);
+  if (pointers.size === 2) ({ dist: pinchDist, mx: midX, my: midY } = twoFingerState());
+}
+el.addEventListener('pointerup', endPointer);
+el.addEventListener('pointercancel', endPointer);
+el.addEventListener('contextmenu', e => e.preventDefault());
+
+el.addEventListener('wheel', e => {
+  if (uiOpen) return;
+  e.preventDefault();
+  const d = THREE.MathUtils.clamp(e.deltaY, -100, 100);
+  walk(-d * 0.012, 0);
+}, { passive: false });
+
+const keys = new Set();
+addEventListener('keydown', e => { if (!uiOpen) keys.add(e.code); });
+addEventListener('keyup', e => keys.delete(e.code));
+
+// ================= LOOP =================
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+el.addEventListener('pointermove', e => {
+  if (e.pointerType !== 'mouse' || pointers.size) return;
+  el.style.cursor = pickAt(e.clientX, e.clientY) ? 'pointer' : 'grab';
+});
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  // rain.update(performance.now());   // uncomment to let the background rain flow again
+  glyphRain.update(dt);
+
+  const speed = (keys.has('ShiftLeft') ? 9 : 4.5) * dt;
+  let f = 0, r = 0;
+  if (keys.has('KeyW') || keys.has('ArrowUp')) f += speed;
+  if (keys.has('KeyS') || keys.has('ArrowDown')) f -= speed;
+  if (keys.has('KeyD')) r += speed;
+  if (keys.has('KeyA')) r -= speed;
+  if (keys.has('ArrowLeft')) goalYaw += 1.8 * dt;
+  if (keys.has('ArrowRight')) goalYaw -= 1.8 * dt;
+  if (f || r) walk(f, r);
+
+  const a = 1 - Math.pow(0.0005, dt);
+  yaw += (goalYaw - yaw) * a;
+  pitch += (goalPitch - pitch) * a;
+  camera.position.lerp(goal, a);
+  camera.rotation.set(pitch, yaw, 0);
+  nexie.rotation.y = Math.atan2(camera.position.x - nexie.position.x, camera.position.z - nexie.position.z);
+
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

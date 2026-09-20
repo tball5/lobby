@@ -1,0 +1,9 @@
+{
+  "name": "Nexie",
+  "image": "nexie.png",
+  "position": [1.2, 0, -7.6],
+  "height": 1.75,
+  "greeting": "Welcome to the Nexus District. First time here?",
+  "endpoint": "",
+  "doorUrl": "https://shaden.technology/nexus/"
+}
