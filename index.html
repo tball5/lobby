@@ -71,6 +71,12 @@
   #chat-log .them { background: #1b1b23; align-self: flex-start; }
   #chat-log .me { background: #3b3050; align-self: flex-end; }
   #chat-log .sys { color: #8b8f99; font-size: 12px; align-self: center; }
+  #chat-log .room-link {
+    display: block; margin: 8px 0 2px; width: 100%; text-align: left;
+    background: #231d33; border: 1px solid #4a3d6b; border-radius: 8px;
+    color: #e9e2fb; padding: 8px 10px; font: inherit; cursor: pointer;
+  }
+  #chat-log .room-link:hover { background: #2d2542; border-color: #7a64b0; }
   #chat-form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid #23232b; }
   #chat-input { flex: 1; background: #16161d; border: 1px solid #2a2a33; border-radius: 8px;
     padding: 8px 10px; color: inherit; font: inherit; }
@@ -909,7 +915,8 @@ const CFG = {
   height: 1.88,
   greeting: "Welcome to the Nexus District. First time here?",
   endpoint: '',                    // your Cloudflare Worker URL
-  doorUrl: 'https://shaden.technology/nexus/'
+  doorUrl: 'https://shaden.technology/nexus/',
+  rooms: []                        // [{ id, label, emoji, url }] from nexie.json
 };
 let modalOpen = false;     // the door card blocks input; the chat does not
 const typing = () => document.activeElement === document.getElementById('chat-input');
@@ -936,15 +943,54 @@ function placeholderTexture(label = 'NEXIE', top = '#b79cf2', bottom = '#4a3d6b'
 
 const nexieViews = [placeholderTexture(), placeholderTexture('NEXIE 2', '#9fd0f2', '#3d4f6b')];
 let nexieView = 0;
-const nexie = new THREE.Mesh(
-  new THREE.PlaneGeometry(1, 1),
-  new THREE.MeshBasicMaterial({ map: nexieViews[0], transparent: true, alphaTest: 0.35, toneMapped: false })
-);
+// hologram look: scanlines, faint colour split, flicker, and short glitch bursts
+const HOLO_OPACITY = 0.92;
+const holoMat = new THREE.ShaderMaterial({
+  uniforms: {
+    map: { value: nexieViews[0] },
+    time: { value: 0 },
+    glitch: { value: 0 },
+    opacity: { value: HOLO_OPACITY }
+  },
+  transparent: true,
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: `
+    uniform sampler2D map;
+    uniform float time, glitch, opacity;
+    varying vec2 vUv;
+    float rnd(float n) { return fract(sin(n) * 43758.5453); }
+    void main() {
+      vec2 uv = vUv;
+      // during a burst, random horizontal bands slide sideways
+      float band = floor(uv.y * 28.0);
+      float r = rnd(band + floor(time * 24.0));
+      uv.x += (r - 0.5) * 0.09 * glitch * step(0.55, r);
+      // faint colour split, stronger in a burst
+      float sp = 0.0025 + 0.012 * glitch;
+      vec4 c = texture2D(map, uv);
+      c.r = mix(c.r, texture2D(map, uv + vec2(sp, 0.0)).r, 0.7);
+      c.b = mix(c.b, texture2D(map, uv - vec2(sp, 0.0)).b, 0.7);
+      if (c.a < 0.35) discard;
+      float scan = 0.9 + 0.1 * sin(uv.y * 820.0 - time * 5.0);        // scanlines
+      float flick = 0.97 + 0.03 * sin(time * 41.0 + rnd(floor(time * 8.0)) * 6.0);
+      vec3 col = c.rgb * scan * flick + vec3(0.05, 0.03, 0.09) * glitch;
+      gl_FragColor = vec4(col, c.a * opacity);
+      #include <encodings_fragment>
+    }`
+});
+const nexie = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), holoMat);
+let glitchLeft = 0;
+function glitchBurst(len = 0.08 + Math.random() * 0.2) { glitchLeft = Math.max(glitchLeft, len); }
 scene.add(nexie);
 
 function placeNexie() {
   const [px, , pz] = CFG.position;
-  const img = nexie.material.map.image;
+  const img = holoMat.uniforms.map.value.image;
   const aspect = img && img.height ? img.width / img.height : 0.5;
   const h = CFG.height, w = h * aspect;
   nexie.geometry.dispose();
@@ -970,7 +1016,7 @@ fetch('nexie.json').then(r => r.ok ? r.json() : null).then(cfg => {
       t.encoding = THREE.sRGBEncoding;
       t.anisotropy = renderer.capabilities.getMaxAnisotropy();
       nexieViews[i] = t;
-      if (i === nexieView) { nexie.material.map = t; nexie.material.needsUpdate = true; placeNexie(); }
+      if (i === nexieView) { holoMat.uniforms.map.value = t; placeNexie(); }
     }, undefined, () => {});
   });
   placeNexie();
@@ -989,10 +1035,7 @@ const doorEl = document.getElementById('door');
 function askToLeave() { modalOpen = true; doorEl.hidden = false; }
 function closeDoor() { modalOpen = false; doorEl.hidden = true; }
 document.getElementById('door-stay').addEventListener('click', closeDoor);
-document.getElementById('door-exit').addEventListener('click', () => {
-  document.getElementById('fade').classList.add('on');
-  setTimeout(() => { location.href = CFG.doorUrl; }, 520);
-});
+document.getElementById('door-exit').addEventListener('click', () => goTo(CFG.doorUrl));
 
 // ---- chat overlay (history lives in memory only) ----
 const chatEl = document.getElementById('chat');
@@ -1000,10 +1043,30 @@ const logEl = document.getElementById('chat-log');
 const inputEl = document.getElementById('chat-input');
 const sendEl = document.getElementById('chat-send');
 const history = [];
+function goTo(url) {
+  document.getElementById('fade').classList.add('on');
+  setTimeout(() => { location.href = url; }, 520);
+}
+// Nexie writes [[go:room-id]]; only ids listed in nexie.json become buttons
+function fillMsg(d, text) {
+  d.textContent = '';
+  const parts = text.split(/\[\[go:([a-z0-9_-]+)\]\]/i);
+  parts.forEach((part, i) => {
+    if (i % 2 === 0) { if (part) d.appendChild(document.createTextNode(part)); return; }
+    const room = (CFG.rooms || []).find(r => r.id.toLowerCase() === part.toLowerCase());
+    if (!room) return;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'room-link';
+    b.textContent = (room.emoji ? room.emoji + '  ' : '') + room.label;
+    b.addEventListener('click', () => goTo(room.url));
+    d.appendChild(b);
+  });
+}
 function addMsg(text, cls) {
   const d = document.createElement('div');
   d.className = 'msg ' + cls;
-  d.textContent = text;
+  if (cls === 'them') fillMsg(d, text); else d.textContent = text;
   logEl.appendChild(d);
   logEl.scrollTop = logEl.scrollHeight;
   return d;
@@ -1037,12 +1100,15 @@ document.getElementById('chat-form').addEventListener('submit', async e => {
     const res = await fetch(CFG.endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: history })
+      body: JSON.stringify({
+        messages: history,
+        rooms: (CFG.rooms || []).map(r => ({ id: r.id, label: r.label }))   // so she knows the directory
+      })
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const reply = data.reply || data.choices?.[0]?.message?.content || '…';
-    thinking.textContent = reply;
+    fillMsg(thinking, reply);
     history.push({ role: 'assistant', content: reply });
   } catch (err) {
     console.error('[nexie]', err);        // open devtools to see the real cause
@@ -1207,6 +1273,10 @@ function frame(now = performance.now()) {
   }
   // rain.update(performance.now());   // uncomment to let the background rain flow again
   glyphRain.update(dt);
+  holoMat.uniforms.time.value += dt;
+  if (glitchLeft > 0) glitchLeft -= dt;
+  else if (Math.random() < dt * 0.4) glitchBurst();   // roughly one burst every 2.5 s
+  holoMat.uniforms.glitch.value = glitchLeft > 0 ? 0.6 + Math.random() * 0.4 : 0;
 
   const speed = (keys.has('ShiftLeft') ? 9 : 4.5) * dt;
   let f = 0, r = 0;
@@ -1232,8 +1302,8 @@ function frame(now = performance.now()) {
     : ((nAng > -0.9 && nAng < Math.PI - 0.07) ? 0 : 1);
   if (wantView !== nexieView) {
     nexieView = wantView;
-    nexie.material.map = nexieViews[nexieView];
-    nexie.material.needsUpdate = true;
+    holoMat.uniforms.map.value = nexieViews[nexieView];
+    glitchBurst(0.18);                     // she flickers as she "turns"
     placeNexie();
   }
 

@@ -2,9 +2,39 @@
   "name": "Nexie",
   "image": "nexie.png",
   "image2": "nexie2.png",
-  "position": [1.2, 0, -7.12],
+  "position": [
+    1.2,
+    0,
+    -7.12
+  ],
   "height": 1.88,
   "greeting": "Welcome to the Nexus District. First time here?",
   "endpoint": "https://nexx.thill5523.workers.dev/",
-  "doorUrl": "https://shaden.technology/nexus/"
+  "doorUrl": "https://shaden.technology/nexus/",
+  "rooms": [
+    {
+      "id": "arcade",
+      "label": "The Arcade",
+      "emoji": "🕹️",
+      "url": "https://shaden.technology/arcade/"
+    },
+    {
+      "id": "pub",
+      "label": "The Pub",
+      "emoji": "🍻",
+      "url": "https://shaden.technology/pub/"
+    },
+    {
+      "id": "temple",
+      "label": "The Temple",
+      "emoji": "🔮",
+      "url": "https://shaden.technology/temple/"
+    },
+    {
+      "id": "records",
+      "label": "The Records",
+      "emoji": "💿",
+      "url": "https://shadenrecords.com/"
+    }
+  ]
 }
