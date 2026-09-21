@@ -455,9 +455,13 @@ function seatingGroup(x, z) {
 // Reception desk (in front of the window, facing into the lobby)
 {
   const g = new THREE.Group();
-  box(6, 1.01, 1.0, M.black, 0, 0.505, 0, g);
-  box(6.2, 0.05, 1.3, M.lightGrey, 0, 1.035, 0.1, g);
-  box(6, 0.02, 0.02, M.led, 0, 0.08, 0.51, g);
+  // The desk draws last among solid objects and leaves no depth behind, so Nexie
+  // (drawn after it) always shows over it: her laptop can overlap the desk top.
+  const dm = [M.black, M.lightGrey, M.led].map(m => { const c = m.clone(); c.depthWrite = false; return c; });
+  const body = box(6, 1.03, 1.0, dm[0], 0, 0.515, 0, g);
+  const top  = box(6.2, 0.05, 1.3, dm[1], 0, 1.055, 0.1, g);
+  const led  = box(6, 0.02, 0.02, dm[2], 0, 0.08, 0.51, g);
+  body.renderOrder = 10; top.renderOrder = 11; led.renderOrder = 12;
   g.position.set(0, 0, -6.5);
   scene.add(g); solid(g);
 }
@@ -940,6 +944,7 @@ const nexie = new THREE.Mesh(
   new THREE.PlaneGeometry(1, 1),
   new THREE.MeshBasicMaterial({ map: nexieViews[0], transparent: true, alphaTest: 0.35, toneMapped: false })
 );
+nexie.renderOrder = 20;           // after the desk
 scene.add(nexie);
 
 function placeNexie() {
