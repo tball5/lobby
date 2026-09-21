@@ -904,7 +904,7 @@ scene.add(sun);
 const CFG = {
   name: 'Nexie',
   image: 'nexie.png',
-  position: [1.2, 0, -7.6],       // behind the desk
+  position: [1.2, 0, -7.3],       // just behind the desk
   height: 1.88,
   greeting: "Welcome to the Nexus District. First time here?",
   endpoint: '',                    // your Cloudflare Worker URL
@@ -938,12 +938,6 @@ const nexie = new THREE.Mesh(
   new THREE.MeshBasicMaterial({ map: placeholderTexture(), transparent: true, alphaTest: 0.35, toneMapped: false })
 );
 scene.add(nexie);
-const nexieShadow = new THREE.Mesh(
-  new THREE.CircleGeometry(0.45, 24),
-  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.45, depthWrite: false })
-);
-nexieShadow.rotation.x = -Math.PI / 2;
-scene.add(nexieShadow);
 
 function placeNexie() {
   const [px, , pz] = CFG.position;
@@ -953,8 +947,6 @@ function placeNexie() {
   nexie.geometry.dispose();
   nexie.geometry = new THREE.PlaneGeometry(w, h);
   nexie.position.set(px, h / 2, pz);                  // feet on the floor
-  nexieShadow.position.set(px, 0.012, pz);
-  nexieShadow.scale.setScalar(Math.max(0.8, w / 0.9));
 }
 placeNexie();
 
@@ -1173,7 +1165,7 @@ el.addEventListener('pointermove', e => {
 
 // press P for a frame counter and draw-call readout
 const statsEl = document.getElementById('stats');
-let statsOn = false, frames = 0, statsT = 0, fps = 0;
+let statsOn = false, frames = 0, statsFrom = performance.now(), fps = 0;
 function toggleStats() { statsOn = !statsOn; statsEl.hidden = !statsOn; }
 addEventListener('keydown', e => { if (e.code === 'KeyP' && !modalOpen && !typing()) toggleStats(); });
 if (location.search.includes('stats')) toggleStats();          // ?stats=1 on any device
@@ -1186,7 +1178,14 @@ const bootAt = performance.now();
 let booted = false;
 
 const clock = new THREE.Clock();
-function frame() {
+const FPS_CAP = isTouch ? 60 : 30;       // frames per second: phones 60, desktop 30
+const FRAME_MS = 1000 / FPS_CAP;
+let nextFrameAt = 0;
+
+function frame(now = performance.now()) {
+  if (now < nextFrameAt - 1) return;      // not this refresh
+  // step the schedule forward by exactly one frame; if we fell far behind, resync
+  nextFrameAt = now - nextFrameAt > FRAME_MS ? now + FRAME_MS : nextFrameAt + FRAME_MS;
   const dt = Math.min(clock.getDelta(), 0.05);
   if (!booted) {                                   // hold the title card for a beat
     booted = true;
@@ -1217,11 +1216,12 @@ function frame() {
   renderer.render(scene, camera);
 
   if (statsOn) {
-    frames++; statsT += dt;
-    if (statsT >= 0.5) { fps = Math.round(frames / statsT); frames = 0; statsT = 0; }
+    frames++;
+    const span = now - statsFrom;
+    if (span >= 1000) { fps = Math.round(frames * 1000 / span); frames = 0; statsFrom = now; }
     const r = renderer.info.render;
     statsEl.textContent =
-      `${fps} fps\ncalls  ${r.calls}\ntris   ${(r.triangles / 1000).toFixed(0)}k\ndpr    ${renderer.getPixelRatio().toFixed(2)}`;
+      `${fps} fps (cap ${FPS_CAP})\ncalls  ${r.calls}\ntris   ${(r.triangles / 1000).toFixed(0)}k\ndpr    ${renderer.getPixelRatio().toFixed(2)}`;
   }
 }
 renderer.setAnimationLoop(frame);

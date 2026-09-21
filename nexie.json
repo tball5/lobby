@@ -1,7 +1,7 @@
 {
   "name": "Nexie",
   "image": "nexie.png",
-  "position": [1.2, 0, -7.6],
+  "position": [1.2, 0, -7.3],
   "height": 1.88,
   "greeting": "Welcome to the Nexus District. First time here?",
   "endpoint": "https://nexx.thill5523.workers.dev/",
