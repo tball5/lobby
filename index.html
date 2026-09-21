@@ -455,8 +455,8 @@ function seatingGroup(x, z) {
 // Reception desk (in front of the window, facing into the lobby)
 {
   const g = new THREE.Group();
-  box(6, 1.1, 1.0, M.black, 0, 0.55, 0, g);
-  box(6.2, 0.05, 1.3, M.lightGrey, 0, 1.125, 0.1, g);
+  box(6, 1.06, 1.0, M.black, 0, 0.53, 0, g);
+  box(6.2, 0.05, 1.3, M.lightGrey, 0, 1.085, 0.1, g);
   box(6, 0.02, 0.02, M.led, 0, 0.08, 0.51, g);
   g.position.set(0, 0, -6.5);
   scene.add(g); solid(g);
@@ -904,7 +904,8 @@ scene.add(sun);
 const CFG = {
   name: 'Nexie',
   image: 'nexie.png',
-  position: [1.2, 0, -7.3],       // just behind the desk
+  image2: 'nexie2.png',           // shown when you walk round to her right (your left)
+  position: [1.2, 0, -7.12],      // right up against the desk
   height: 1.88,
   greeting: "Welcome to the Nexus District. First time here?",
   endpoint: '',                    // your Cloudflare Worker URL
@@ -913,13 +914,13 @@ const CFG = {
 let modalOpen = false;     // the door card blocks input; the chat does not
 const typing = () => document.activeElement === document.getElementById('chat-input');
 
-// placeholder silhouette until nexie.png is in place
-function placeholderTexture() {
+// placeholder silhouettes until nexie.png / nexie2.png are in place
+function placeholderTexture(label = 'NEXIE', top = '#b79cf2', bottom = '#4a3d6b') {
   const c = document.createElement('canvas');
   c.width = 512; c.height = 1024;
   const g = c.getContext('2d');
   const grd = g.createLinearGradient(0, 0, 0, 1024);
-  grd.addColorStop(0, '#b79cf2'); grd.addColorStop(1, '#4a3d6b');
+  grd.addColorStop(0, top); grd.addColorStop(1, bottom);
   g.fillStyle = grd;
   g.beginPath(); g.arc(256, 190, 92, 0, Math.PI * 2); g.fill();          // head
   g.beginPath();
@@ -927,15 +928,17 @@ function placeholderTexture() {
   g.lineTo(380, 1010); g.bezierCurveTo(392, 560, 362, 330, 256, 290);
   g.fill();
   g.font = '600 46px system-ui, sans-serif'; g.textAlign = 'center';
-  g.fillStyle = 'rgba(12,12,16,.85)'; g.fillText('NEXIE', 256, 700);
+  g.fillStyle = 'rgba(12,12,16,.85)'; g.fillText(label, 256, 700);
   const t = new THREE.CanvasTexture(c);
   t.encoding = THREE.sRGBEncoding;
   return t;
 }
 
+const nexieViews = [placeholderTexture(), placeholderTexture('NEXIE 2', '#9fd0f2', '#3d4f6b')];
+let nexieView = 0;
 const nexie = new THREE.Mesh(
   new THREE.PlaneGeometry(1, 1),
-  new THREE.MeshBasicMaterial({ map: placeholderTexture(), transparent: true, alphaTest: 0.35, toneMapped: false })
+  new THREE.MeshBasicMaterial({ map: nexieViews[0], transparent: true, alphaTest: 0.35, toneMapped: false })
 );
 scene.add(nexie);
 
@@ -961,15 +964,15 @@ fetch('nexie.json').then(r => r.ok ? r.json() : null).then(cfg => {
   if (!cfg) return;
   Object.assign(CFG, cfg);
   document.getElementById('chat-name').textContent = CFG.name || 'Nexie';
-  if (CFG.image) {
-    new THREE.TextureLoader().load(CFG.image, t => {
+  [CFG.image, CFG.image2].forEach((src, i) => {
+    if (!src) return;
+    new THREE.TextureLoader().load(src, t => {
       t.encoding = THREE.sRGBEncoding;
       t.anisotropy = renderer.capabilities.getMaxAnisotropy();
-      nexie.material.map = t;
-      nexie.material.needsUpdate = true;
-      placeNexie();
-    }, undefined, () => placeNexie());
-  } else placeNexie();
+      nexieViews[i] = t;
+      if (i === nexieView) { nexie.material.map = t; nexie.material.needsUpdate = true; placeNexie(); }
+    }, undefined, () => {});
+  });
   placeNexie();
 }).catch(() => {});
 
@@ -1179,13 +1182,22 @@ let booted = false;
 
 const clock = new THREE.Clock();
 const FPS_CAP = isTouch ? 60 : 30;       // frames per second: phones 60, desktop 30
-const FRAME_MS = 1000 / FPS_CAP;
-let nextFrameAt = 0;
+const IDLE_FPS = 12;                     // after IDLE_AFTER seconds with no input
+const IDLE_AFTER = 20;
+const AWAY_FPS = 5;                      // window not focused
+let lastInput = performance.now();
+['pointerdown', 'pointermove', 'wheel', 'keydown', 'touchstart'].forEach(ev =>
+  addEventListener(ev, () => { lastInput = performance.now(); }, { passive: true }));
+let nextFrameAt = 0, mode = 'active', workMs = 0;
 
 function frame(now = performance.now()) {
+  mode = !document.hasFocus() ? 'away' : (now - lastInput > IDLE_AFTER * 1000 ? 'idle' : 'active');
+  const cap = mode === 'away' ? AWAY_FPS : mode === 'idle' ? IDLE_FPS : FPS_CAP;
+  const FRAME_MS = 1000 / cap;
   if (now < nextFrameAt - 1) return;      // not this refresh
   // step the schedule forward by exactly one frame; if we fell far behind, resync
   nextFrameAt = now - nextFrameAt > FRAME_MS ? now + FRAME_MS : nextFrameAt + FRAME_MS;
+  const workStart = performance.now();
   const dt = Math.min(clock.getDelta(), 0.05);
   if (!booted) {                                   // hold the title card for a beat
     booted = true;
@@ -1211,17 +1223,32 @@ function frame(now = performance.now()) {
   pitch += (goalPitch - pitch) * a;
   camera.position.lerp(goal, a);
   camera.rotation.set(pitch, yaw, 0);
-  nexie.rotation.y = Math.atan2(camera.position.x - nexie.position.x, camera.position.z - nexie.position.z);
+  const nAng = Math.atan2(camera.position.x - nexie.position.x, camera.position.z - nexie.position.z);
+  nexie.rotation.y = nAng;
+  const wantView = nexieView === 0 ? (nAng < -0.42 ? 1 : 0) : (nAng > -0.26 ? 0 : 1);
+  if (wantView !== nexieView) {
+    nexieView = wantView;
+    nexie.material.map = nexieViews[nexieView];
+    nexie.material.needsUpdate = true;
+    placeNexie();
+  }
 
   renderer.render(scene, camera);
+  workMs = workMs * 0.9 + (performance.now() - workStart) * 0.1;   // smoothed
 
   if (statsOn) {
     frames++;
     const span = now - statsFrom;
     if (span >= 1000) { fps = Math.round(frames * 1000 / span); frames = 0; statsFrom = now; }
-    const r = renderer.info.render;
+    const r = renderer.info.render, mem = renderer.info.memory;
+    const budget = 1000 / (mode === 'away' ? AWAY_FPS : mode === 'idle' ? IDLE_FPS : FPS_CAP);
     statsEl.textContent =
-      `${fps} fps (cap ${FPS_CAP})\ncalls  ${r.calls}\ntris   ${(r.triangles / 1000).toFixed(0)}k\ndpr    ${renderer.getPixelRatio().toFixed(2)}`;
+      `${fps} fps  (${mode}, cap ${Math.round(1000 / budget)})\n` +
+      `work   ${workMs.toFixed(1)} ms / ${budget.toFixed(0)} ms  ${Math.round(workMs / budget * 100)}%\n` +
+      `calls  ${r.calls}\n` +
+      `tris   ${(r.triangles / 1000).toFixed(0)}k\n` +
+      `geo ${mem.geometries}  tex ${mem.textures}  prog ${renderer.info.programs.length}\n` +
+      `dpr    ${renderer.getPixelRatio().toFixed(2)}`;
   }
 }
 renderer.setAnimationLoop(frame);
