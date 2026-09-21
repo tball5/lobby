@@ -15,10 +15,11 @@
     transition: opacity .6s ease;
   }
   #loading span {
-    color: #9a93ad; font: 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #b9bbc1; font: 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
     letter-spacing: .28em; text-transform: uppercase;
   }
   #loading.off { opacity: 0; pointer-events: none; }
+  #loading.gone { display: none; }
   #stats {
     position: fixed; left: 12px; top: 12px; z-index: 45; pointer-events: none;
     background: rgba(10,10,14,.8); color: #cfe3ff; border: 1px solid #23232b; border-radius: 8px;
@@ -36,12 +37,18 @@
   }
   #door[hidden] { display: none; }
   #door-card {
+    position: relative;
     background: rgba(12,12,16,.96); border: 1px solid #2a2a33; border-radius: 12px;
     padding: 22px 24px; text-align: center; min-width: 260px;
     box-shadow: 0 18px 50px rgba(0,0,0,.6);
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: #e6e8ec;
   }
-  #door-title { margin: 0 0 16px; letter-spacing: .16em; text-transform: uppercase; font-size: 13px; color: #cdbdf5; }
+  #door-close {
+    position: absolute; top: 6px; right: 8px; background: none; border: 0;
+    color: #8b8f99; font-size: 20px; line-height: 1; cursor: pointer; padding: 4px;
+  }
+  #door-close:hover { color: #e6e8ec; }
+  #door-title { margin: 6px 0 16px; letter-spacing: .16em; text-transform: uppercase; font-size: 13px; color: #cdbdf5; }
   #door-actions { display: flex; gap: 10px; justify-content: center; }
   #door-actions button {
     border: 1px solid #2f2f3a; background: #16161d; color: #d8dbe2;
@@ -99,10 +106,10 @@
 <div id="stats" hidden></div>
 <div id="door" hidden>
   <div id="door-card">
-    <p id="door-title">Explore the District</p>
+    <button id="door-close" type="button" aria-label="Close">×</button>
+    <p id="door-title">Explore the District?</p>
     <div id="door-actions">
-      <button id="door-stay" type="button">Stay</button>
-      <button id="door-exit" type="button">Exit</button>
+      <button id="door-exit" type="button">Explore</button>
     </div>
   </div>
 </div>
@@ -1036,7 +1043,8 @@ function pickAt(cx, cy) {
 const doorEl = document.getElementById('door');
 function askToLeave() { modalOpen = true; doorEl.hidden = false; }
 function closeDoor() { modalOpen = false; doorEl.hidden = true; }
-document.getElementById('door-stay').addEventListener('click', closeDoor);
+document.getElementById('door-close').addEventListener('click', closeDoor);
+doorEl.addEventListener('click', e => { if (e.target === doorEl) closeDoor(); });   // click outside the card
 document.getElementById('door-exit').addEventListener('click', () => goTo(CFG.doorUrl));
 
 // ---- chat overlay (history lives in memory only) ----
@@ -1247,6 +1255,25 @@ document.addEventListener('visibilitychange', () => {
 
 const bootAt = performance.now();
 let booted = false;
+function showTitleCard(holdMs = 1000) {
+  const el = document.getElementById('loading');
+  el.classList.remove('gone', 'off');
+  clearTimeout(showTitleCard.t1); clearTimeout(showTitleCard.t2);
+  showTitleCard.t1 = setTimeout(() => el.classList.add('off'), holdMs);
+  showTitleCard.t2 = setTimeout(() => el.classList.add('gone'), holdMs + 700);
+}
+
+// Coming back with the browser's Back button restores this page from memory,
+// still faded to black. Reset it and replay the title card.
+addEventListener('pageshow', e => {
+  if (!e.persisted) return;
+  document.getElementById('fade').classList.remove('on');
+  closeDoor();
+  nextFrameAt = 0;
+  clock.getDelta();                                // drop the time spent away
+  renderer.setAnimationLoop(frame);
+  showTitleCard(1000);
+});
 
 const clock = new THREE.Clock();
 const FPS_CAP = isTouch ? 60 : 30;       // frames per second: phones 60, desktop 30
@@ -1269,9 +1296,7 @@ function frame(now = performance.now()) {
   const dt = Math.min(clock.getDelta(), 0.05);
   if (!booted) {                                   // hold the title card for a beat
     booted = true;
-    const el = document.getElementById('loading');
-    setTimeout(() => el.classList.add('off'), Math.max(0, 1000 - (performance.now() - bootAt)));
-    setTimeout(() => el.remove(), 1800);
+    showTitleCard(Math.max(0, 1000 - (performance.now() - bootAt)));
   }
   // rain.update(performance.now());   // uncomment to let the background rain flow again
   glyphRain.update(dt);
@@ -1299,10 +1324,10 @@ function frame(now = performance.now()) {
   const nAng = Math.atan2(camera.position.x - nexie.position.x, camera.position.z - nexie.position.z);
   nexie.rotation.y = nAng;
   // angle 0 = straight in front of her, negative = her right (your left), ±PI = behind her.
-  // View 2 covers her 1 o'clock (-30 deg) round to directly behind; small dead zones stop flicker.
+  // View 2 covers her 1:30 (-45 deg) round to directly behind; small dead zones stop flicker.
   const wantView = nexieView === 0
-    ? ((nAng < -0.52 && nAng > -Math.PI + 0.07) ? 1 : 0)
-    : ((nAng > -0.4 && nAng < Math.PI - 0.07) ? 0 : 1);
+    ? ((nAng < -0.785 && nAng > -Math.PI + 0.05) ? 1 : 0)
+    : ((nAng > -0.72 && nAng < Math.PI - 0.05) ? 0 : 1);
   if (wantView !== nexieView) {
     nexieView = wantView;
     holoMat.uniforms.map.value = nexieViews[nexieView];
