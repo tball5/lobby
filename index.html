@@ -952,12 +952,21 @@ const nexieViews = [placeholderTexture(), placeholderTexture('NEXIE 2', '#9fd0f2
 let nexieView = 0;
 // hologram look: scanlines, faint colour split, flicker, and short glitch bursts
 const HOLO_OPACITY = 0.92;
+// the always-on hologram effects; 0 turns each one off
+const HOLO = {
+  scanlines: 0.03,   // how dark the scanlines get (was 0.10)
+  split: 0.0008,     // colour fringe width at the edges (was 0.0025)
+  flicker: 0.01      // brightness wobble (was 0.03)
+};
 const holoMat = new THREE.ShaderMaterial({
   uniforms: {
     map: { value: nexieViews[0] },
     time: { value: 0 },
     glitch: { value: 0 },
-    opacity: { value: HOLO_OPACITY }
+    opacity: { value: HOLO_OPACITY },
+    scanAmt: { value: HOLO.scanlines },
+    splitAmt: { value: HOLO.split },
+    flickAmt: { value: HOLO.flicker }
   },
   transparent: true,
   vertexShader: `
@@ -968,7 +977,7 @@ const holoMat = new THREE.ShaderMaterial({
     }`,
   fragmentShader: `
     uniform sampler2D map;
-    uniform float time, glitch, opacity;
+    uniform float time, glitch, opacity, scanAmt, splitAmt, flickAmt;
     varying vec2 vUv;
     float rnd(float n) { return fract(sin(n) * 43758.5453); }
     void main() {
@@ -978,13 +987,13 @@ const holoMat = new THREE.ShaderMaterial({
       float r = rnd(band + floor(time * 24.0));
       uv.x += (r - 0.5) * 0.03 * glitch * step(0.7, r);
       // faint colour split, stronger in a burst
-      float sp = 0.0025 + 0.004 * glitch;
+      float sp = splitAmt + 0.004 * glitch;
       vec4 c = texture2D(map, uv);
       c.r = mix(c.r, texture2D(map, uv + vec2(sp, 0.0)).r, 0.7);
       c.b = mix(c.b, texture2D(map, uv - vec2(sp, 0.0)).b, 0.7);
       if (c.a < 0.35) discard;
-      float scan = 0.9 + 0.1 * sin(uv.y * 820.0 - time * 5.0);        // scanlines
-      float flick = 0.97 + 0.03 * sin(time * 41.0 + rnd(floor(time * 8.0)) * 6.0);
+      float scan = 1.0 - scanAmt * (0.5 + 0.5 * sin(uv.y * 820.0 - time * 5.0));   // scanlines
+      float flick = 1.0 - flickAmt * (0.5 + 0.5 * sin(time * 41.0 + rnd(floor(time * 8.0)) * 6.0));
       vec3 col = c.rgb * scan * flick + vec3(0.02, 0.012, 0.035) * glitch;
       gl_FragColor = vec4(col, c.a * opacity);
       #include <encodings_fragment>
