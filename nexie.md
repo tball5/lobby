@@ -17,8 +17,7 @@ You want people to explore the district, and for it to grow bigger and better. W
 
 ## The Nexus Building
 
-- The elevators to the side of the desk are out of service. 
-- The doors behind the visitor lead out to the lawn and the rest of the district.
+- The elevators go down to ground level to explore the city. 
 - The Matrix rain portrait is a the lobby's art piece
 
 ## Places to go
